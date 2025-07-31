@@ -140,20 +140,25 @@ if st.button("Start"):
     for page_index in range(len(pdf_doc)):
         page = pdf_doc.load_page(page_index)
 
-        # Gescannte ROI als mittelgroßes Bitmap holen (geringeres dpi spart RAM)
-        pix = page.get_pixmap(clip=fitz.Rect(*roi), dpi=200)  # 200 dpi reicht meist aus
+        # Versuch, ROI-Bitmap zu erzeugen; leere Bilder überspringen
+        try:
+            pix = page.get_pixmap(clip=fitz.Rect(*roi), dpi=200)
+        except Exception:
+            continue  # Clip außerhalb Seite o. Ä.
+
+        if pix.width == 0 or pix.height == 0:
+            continue  # leeres Bild
+
         crop_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-        # OCR – Robust gegen seltene PNG-Fehler, daher erst in JPEG konvertieren
+        # OCR – Bild in JPEG konvertieren, um ZLIB-Fehler zu vermeiden
         try:
             buf = io.BytesIO()
             crop_img.save(buf, format="JPEG", quality=90)
             buf.seek(0)
-            pil_jpg = Image.open(buf)
-            text = pytesseract.image_to_string(pil_jpg, lang="deu")
-        except Exception as ocr_err:  # PNG/ZLIB-Fehler etc.
-            st.write(f"Seite {page_index + 1}: OCR-Fehler übersprungen → {ocr_err}")
-            continue
+            text = pytesseract.image_to_string(Image.open(buf), lang="deu")
+        except Exception:
+            continue  # OCR fehlgeschlagen → Seite überspringen
 
         m = NAME_PATTERN.search(text)
         if not m:
@@ -162,7 +167,11 @@ if st.button("Start"):
 
         # passenden Eintrag suchen (Name & Datum)
         match = next(
-            (e for e in excel_entries if e["Name"].lower() == name_ocr.lower() and e["Datum_raw"].date() == verteil_date),
+            (
+                e
+                for e in excel_entries
+                if e["Name"].lower() == name_ocr.lower() and e["Datum_raw"].date() == verteil_date
+            ),
             None,
         )
         if not match:
@@ -173,7 +182,7 @@ if st.button("Start"):
             continue
 
         # Annotation unten rechts – kleiner, fett, weiter links
-        bbox = page.bound()
+        bbox = page.rect
         text_point = fitz.Point(bbox.x1 - 100, bbox.y1 - 20)  # 100 pt vom rechten Rand
         page.insert_text(
             text_point,
