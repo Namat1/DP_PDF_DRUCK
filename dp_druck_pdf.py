@@ -1,33 +1,38 @@
 """
-Streamlit App: OCR-gestützte PDF-Annotation nach Namenssuche
+Streamlit App: OCR‑gestützte PDF‑Annotation nach Namenssuche
 ===========================================================
-• Lädt eine mehrseitige PDF-Datei und eine Excel-Tabelle hoch
-• Nutzer markiert per Maus (Drawable-Canvas) einen Suchbereich auf der ersten PDF-Seite
-• OCR wird **nur** in diesem Bereich aller Seiten ausgeführt
-• Wird ein Name gefunden, wird der zugehörige Wert aus der Excel-Tabelle auf der Fund-Seite platziert
+Deploy‑ready for **streamlit.io (Streamlit Cloud)**
+-------------------------------------------------
+• Lädt eine mehrseitige PDF‑Datei und eine Excel‑Tabelle hoch
+• Nutzer markiert per Maus (Drawable‑Canvas) einen Suchbereich auf der ersten PDF‑Seite
+• OCR wird **nur** in dieser Zone aller Seiten ausgeführt (Tesseract)
+• Wird ein Name gefunden, wird der zugehörige Wert aus der Excel‑Tabelle auf der Fund‑Seite platziert
 • Annotierte PDF steht zum Download bereit
 
-Benötigte Pakete
-----------------
+### Python requirements (requirements.txt)
 ```
 streamlit
 streamlit-drawable-canvas
+pymupdf  # fitz
 pandas
-pdf2image
 pillow
 pytesseract
-pymupdf  # fitz
 openpyxl
 ```
 
-> **Hinweis:** [Tesseract](https://github.com/tesseract-ocr) muss lokal installiert sein und erreichbar sein.
+### System requirements (packages.txt for Streamlit Cloud)
+```
+tesseract-ocr
+# deutsches Sprachpaket (optional, sonst defaults zu eng)
+tesseract-ocr-deu
+```
+> **Keine Abhängigkeit zu Poppler**: Wir rendern Seiten ausschließlich mit PyMuPDF und benötigen daher **kein** `pdf2image` / Poppler‑Utils.
 """
 
 from __future__ import annotations
 
 import io
 import re
-from pathlib import Path
 from typing import Tuple
 
 import streamlit as st
@@ -35,32 +40,31 @@ from streamlit_drawable_canvas import st_canvas
 import pandas as pd
 import pytesseract
 import fitz  # PyMuPDF
-from pdf2image import convert_from_bytes
 from PIL import Image
 
 # -----------------------------------------------------------------------------
 # Seiteneinstellungen
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="PDF-Namenssuche & Annotation", layout="centered")
+st.set_page_config(page_title="PDF‑Namenssuche & Annotation", layout="centered")
 
-st.title("🔎 PDF-Namenssuche mit Excel-Referenz und Annotation")
+st.title("🔎 PDF‑Namenssuche mit Excel‑Referenz und Annotation")
 
 with st.expander("Kurzanleitung", expanded=False):
     st.markdown(
         """
-        1. **PDF hochladen** (mehrseitig, gescannt oder Bild-PDF).
-        2. **Excel hochladen** mit Spalten *Name* und *Wert* (z.B. Abteilung).
-        3. **Suchbereich festlegen**: Erste PDF-Seite wird angezeigt, Rah­men ziehen, wo sich der Name befindet.
+        1. **PDF hochladen** (mehrseitig, gescannt oder Bild‑PDF).
+        2. **Excel hochladen** mit Spalten *Name* und *Wert* (z. B. Abteilung).
+        3. **Suchbereich festlegen**: Erste PDF‑Seite wird angezeigt, Rahmen ziehen, wo sich der Name befindet.
         4. **Spalten & Textposition wählen**.
         5. **Start** – du erhältst eine annotierte PDF.
         """
     )
 
 # -----------------------------------------------------------------------------
-# Datei-Uploads
+# Datei‑Uploads
 # -----------------------------------------------------------------------------
 pdf_file = st.file_uploader("PDF hochladen", type=["pdf"], key="pdf")
-excel_file = st.file_uploader("Excel-Datei hochladen", type=["xlsx", "xls"], key="excel")
+excel_file = st.file_uploader("Excel‑Datei hochladen", type=["xlsx", "xls"], key="excel")
 
 if pdf_file and excel_file:
     # Excel einlesen
@@ -71,20 +75,26 @@ if pdf_file and excel_file:
         st.stop()
 
     if df.empty:
-        st.warning("Die Excel-Datei enthält keine Daten.")
+        st.warning("Die Excel‑Datei enthält keine Daten.")
         st.stop()
 
-    # Erster Seiten-Snapshot für Canvas
     pdf_bytes = pdf_file.read()
+
+    # PyMuPDF‑Dokument einmalig öffnen (auch für erste Vorschau)
     try:
-        first_page_img: Image.Image = convert_from_bytes(pdf_bytes, first_page=1, last_page=1)[0]
+        doc_preview = fitz.open(stream=pdf_bytes, filetype="pdf")
     except Exception as e:
-        st.error(f"PDF-Konvertierung fehlgeschlagen: {e}")
+        st.error(f"PDF konnte nicht gelesen werden: {e}")
         st.stop()
+
+    # Erste Seite als Bild für Canvas (150 dpi reicht fürs Zeichnen)
+    first_pix = doc_preview[0].get_pixmap(dpi=150)
+    first_page_img = Image.frombytes("RGB", [first_pix.width, first_pix.height], first_pix.samples)
 
     st.subheader("1️⃣ Suchbereich markieren")
-    CANVAS_WIDTH = 600  # angezeigte Pixelbreite (anpassbar)
+    CANVAS_WIDTH = 600  # angezeigte Pixelbreite
     ratio = CANVAS_WIDTH / first_page_img.width
+
     canvas_result = st_canvas(
         fill_color="",  # keine Füllung, nur Kontur
         stroke_width=3,
@@ -97,13 +107,11 @@ if pdf_file and excel_file:
         key="canvas",
     )
 
-    roi: Tuple[int, int, int, int] | None = None  # (left, top, right, bottom) in Original-Pixeln
+    roi: Tuple[int, int, int, int] | None = None  # (left, top, right, bottom) in Original‑Pixeln
     if canvas_result.json_data and canvas_result.json_data.get("objects"):
-        # letzter gezeichneter Rahmen
         rect = canvas_result.json_data["objects"][-1]
         left_disp, top_disp = rect["left"], rect["top"]
         width_disp, height_disp = rect["width"], rect["height"]
-        # Skalierung zurück auf Originalauflösung
         left, top = int(left_disp / ratio), int(top_disp / ratio)
         right = int((left_disp + width_disp) / ratio)
         bottom = int((top_disp + height_disp) / ratio)
@@ -121,42 +129,45 @@ if pdf_file and excel_file:
     with col1:
         name_col = st.selectbox("Spalte mit Namen", df.columns)
     with col2:
-        value_col = st.selectbox("Spalte mit einzutragender Information", df.columns, index=min(1, len(df.columns)-1))
+        value_col = st.selectbox(
+            "Spalte mit einzutragender Information",
+            df.columns,
+            index=min(1, len(df.columns) - 1),
+        )
 
-    st.markdown("**Position des einzutragenden Textes (Pt, 1 Pt ≈ 1⁄72 Zoll):**")
+    st.markdown("**Position des einzutragenden Textes (Pt, 1 Pt ≈ 1⁄72 Zoll):**")
     colx, coly, colf = st.columns(3)
     with colx:
-        x_position = st.number_input("X-Offset", 0, 600, value=50)
+        x_position = st.number_input("X‑Offset", 0, 600, value=50)
     with coly:
-        y_position = st.number_input("Y-Offset", 0, 800, value=50)
+        y_position = st.number_input("Y‑Offset", 0, 800, value=50)
     with colf:
         font_size = st.number_input("Schriftgröße", 6, 48, value=12)
 
-    case_sensitive = st.checkbox("Groß-/Kleinschreibung beachten", value=False)
+    case_sensitive = st.checkbox("Groß‑/Kleinschreibung beachten", value=False)
 
-    # Name-zu-Wert-Mapping
+    # Name‑zu‑Wert‑Mapping
     name_map = {
         (str(r[name_col]) if case_sensitive else str(r[name_col]).lower()): r[value_col]
-        for _, r in df.iterrows() if pd.notna(r[name_col])
+        for _, r in df.iterrows()
+        if pd.notna(r[name_col])
     }
 
     if st.button("🚀 Starten", disabled=roi is None):
         with st.spinner("Verarbeite PDF… bitte warten"):
-            # PDF erneut als Dokument laden
+            # PDF als bearbeitbares Dokument erneut öffnen
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-            # OCR-Schleife
             for page_idx in range(len(doc)):
                 page = doc[page_idx]
 
-                # Seite als Bild (PIL) erzeugen
+                # Seite als Bild (300 dpi) für OCR
                 pix = page.get_pixmap(dpi=300)
                 page_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
                 # ROI zuschneiden
                 crop_img = page_img.crop(roi)
 
-                # OCR
                 ocr_text = pytesseract.image_to_string(crop_img, lang="deu")
                 search_space = ocr_text if case_sensitive else ocr_text.lower()
 
@@ -164,17 +175,16 @@ if pdf_file and excel_file:
                 for search_name, value in name_map.items():
                     pattern = rf"\b{re.escape(search_name)}\b"
                     if re.search(pattern, search_space):
-                        insertion_text = str(value)
                         page.insert_text(
                             (x_position, y_position),
-                            insertion_text,
+                            str(value),
                             fontsize=font_size,
                             fontname="helv",
                             fill=(0, 0, 0),
                         )
-                        break  # Optional: nur erster Treffer pro Seite
+                        break  # optional: nur erster Treffer pro Seite
 
-            # Ausgabe-PDF
+            # Annotierte PDF speichern
             output_buffer = io.BytesIO()
             doc.save(output_buffer)
             doc.close()
@@ -194,11 +204,8 @@ if pdf_file and excel_file:
 with st.expander("ℹ️ Info & Troubleshooting"):
     st.markdown(
         """
-        * Dieses Tool verwendet [PyMuPDF](https://pymupdf.readthedocs.io/) zum
-          Schreiben in die PDF und [pytesseract](https://pypi.org/project/pytesseract/)
-          für die Texterkennung im gewählten Suchbereich.
-        * Bei falsch skalierten Koordinaten stelle sicher, dass dein Monitor-Zoom
-          auf 100 % steht oder passe `CANVAS_WIDTH` an.
-        * Für mehrsprachige Dokumente wähle das passende Tesseract-Language-Pack.
+        * Keine Poppler‑Abhängigkeit: Das Rendering übernimmt **PyMuPDF**.
+        * Lege eine `packages.txt` mit `tesseract-ocr` (und optional `tesseract-ocr-deu`) an, damit OCR auf Streamlit Cloud funktioniert.
+        * Passe `CANVAS_WIDTH` an, falls dein PDF extrem breit ist oder du eine hochauflösende Vorschau brauchst.
         """
     )
