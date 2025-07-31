@@ -28,7 +28,6 @@ else:
 # ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Touren zur Dienstplanverteilung", layout="wide")
 
-
 # ────────────────────────────────────────────────────────────────
 # Dateiupload
 # ────────────────────────────────────────────────────────────────
@@ -53,6 +52,7 @@ WEEKDAYS_DE = {
 }
 
 def kw_year_sunday(d: datetime) -> Tuple[int, int]:
+    """ISO-KW & Jahr, aber mit Sonntag als Wochenbeginn."""
     s = d + timedelta(days=1)
     return int(s.strftime("%V")), int(s.strftime("%G"))
 
@@ -74,30 +74,21 @@ def extract_entries(row: pd.Series) -> List[dict]:
     uhrzeit = row[16] if len(row) > 16 else ""
     lkw = row[11] if len(row) > 11 else ""
 
-    if pd.notna(row[3]) and pd.notna(row[4]):
-        name = f"{str(row[3]).strip()} {str(row[4]).strip()}"
-        entries.append({
-            "KW": kw,
-            "Jahr": year,
-            "Datum": datum_lang,
-            "Datum_raw": datum,
-            "Name": name,
-            "Tour": tour,
-            "Uhrzeit": uhrzeit,
-            "LKW": lkw,
-        })
-    if pd.notna(row[6]) and pd.notna(row[7]):
-        name = f"{str(row[6]).strip()} {str(row[7]).strip()}"
-        entries.append({
-            "KW": kw,
-            "Jahr": year,
-            "Datum": datum_lang,
-            "Datum_raw": datum,
-            "Name": name,
-            "Tour": tour,
-            "Uhrzeit": uhrzeit,
-            "LKW": lkw,
-        })
+    def _append(vor: int, nach: int):
+        if pd.notna(row[vor]) and pd.notna(row[nach]):
+            entries.append({
+                "KW": kw,
+                "Jahr": year,
+                "Datum": datum_lang,
+                "Datum_raw": datum,
+                "Name": f"{str(row[vor]).strip()} {str(row[nach]).strip()}",
+                "Tour": tour,
+                "Uhrzeit": uhrzeit,
+                "LKW": lkw,
+            })
+
+    _append(3, 4)   # Fahrer 1 (Spalten D + E)
+    _append(6, 7)   # Fahrer 2 (Spalten G + H)
     return entries
 
 # ────────────────────────────────────────────────────────────────
@@ -148,17 +139,32 @@ if st.button("Start"):
 
     for page_index in range(len(pdf_doc)):
         page = pdf_doc.load_page(page_index)
-        pix = page.get_pixmap(clip=fitz.Rect(*roi))
+
+        # Gescannte ROI als mittelgroßes Bitmap holen (geringeres dpi spart RAM)
+        pix = page.get_pixmap(clip=fitz.Rect(*roi), dpi=200)  # 200 dpi reicht meist aus
         crop_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        text = pytesseract.image_to_string(crop_img, lang="deu")
+
+        # OCR – Robust gegen seltene PNG-Fehler, daher erst in JPEG konvertieren
+        try:
+            buf = io.BytesIO()
+            crop_img.save(buf, format="JPEG", quality=90)
+            buf.seek(0)
+            pil_jpg = Image.open(buf)
+            text = pytesseract.image_to_string(pil_jpg, lang="deu")
+        except Exception as ocr_err:  # PNG/ZLIB-Fehler etc.
+            st.write(f"Seite {page_index + 1}: OCR-Fehler übersprungen → {ocr_err}")
+            continue
+
         m = NAME_PATTERN.search(text)
         if not m:
             continue
         name_ocr = f"{m.group(1)} {m.group(2)}".strip()
 
-        # passenden Eintrag suchen (gleicher Name & Datum)
-        page_date = verteil_date
-        match = next((e for e in excel_entries if e["Name"].lower() == name_ocr.lower() and e["Datum_raw"].date() == page_date), None)
+        # passenden Eintrag suchen (Name & Datum)
+        match = next(
+            (e for e in excel_entries if e["Name"].lower() == name_ocr.lower() and e["Datum_raw"].date() == verteil_date),
+            None,
+        )
         if not match:
             continue
 
@@ -168,15 +174,14 @@ if st.button("Start"):
 
         # Annotation unten rechts – kleiner, fett, weiter links
         bbox = page.bound()
-        text_point = fitz.Point(bbox.x1 - 100, bbox.y1 - 20)  # 50 pt weiter links
+        text_point = fitz.Point(bbox.x1 - 100, bbox.y1 - 20)  # 100 pt vom rechten Rand
         page.insert_text(
             text_point,
             tour_text,
-            fontname="helvB",  # fett
-            fontsize=8,  # kleiner
-            fontfile=None,
+            fontname="helvB",  # bold Helvetica – systemfont
+            fontsize=8,
             fill=(0, 0, 0),
-            render_mode=3,
+            render_mode=3,  # fill & stroke = pseudo-fett, falls helvB fehlt
         )
         matches += 1
 
@@ -184,7 +189,12 @@ if st.button("Start"):
         st.warning("Keine Übereinstimmungen gefunden")
         st.stop()
 
-    # PDF speichern
+    # PDF speichern & anbieten
     output = io.BytesIO()
     pdf_doc.save(output)
-    st.download_button("PDF herunterladen", data=output.getvalue(), file_name="dienstplaene.pdf", mime="application/pdf")
+    st.download_button(
+        "PDF herunterladen",
+        data=output.getvalue(),
+        file_name="dienstplaene.pdf",
+        mime="application/pdf",
+    )
