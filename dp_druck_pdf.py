@@ -10,7 +10,7 @@ End-to-End-Workflow:
 3. **OCR** – Namen pro Seite auslesen & zwischen­speichern.
 4. **Excel parsen** – Fahrer + Datum + Tour-Nr. extrahieren.
 5. **Verteilungs­datum wählen**.
-6. **Match & Annotate** – Namen ↔︎ Excel zeilen verbinden, Tour unten rechts auf jede PDF-Seite schreiben.
+6. **Match & Annotate** – Namen ↔︎ Excel zeilen verbinden, **Tour-Nr.** unten rechts auf jede PDF-Seite schreiben.
 7. **Download** der beschrifteten PDF.
 
 ### Python-Pakete (requirements.txt)
@@ -211,79 +211,4 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
         for _, r in xl_df.iterrows():
             entries.extend(extract_entries(r))
         if not entries:
-            st.error("Keine gültigen Daten in der Excel gefunden.")
-            st.stop()
-        df_entries = pd.DataFrame(entries)
-
-        # 2) PDF öffnen & OCR
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        roi = (x1, y1, x2, y2)
-        matches: list[dict] = []  # Für Ergebnis-Tabelle
-
-        for pg_idx, page in enumerate(doc, start=1):
-            pix = page.get_pixmap(dpi=300)
-            pil_page = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            text_roi = pytesseract.image_to_string(pil_page.crop(roi), lang="deu").strip()
-
-            # Namen extrahieren (Liste vollständiger Namen)
-            names_found = [" ".join(m) for m in NAME_PATTERN.findall(text_roi)]
-            if not names_found:
-                continue  # Keine Namen ➜ nächste Seite
-
-            # Versuche, einen Namen im Excel mit selbem Verteilungs-Datum zu finden
-            match_row = None
-            for name in names_found:
-                mask = (
-                    df_entries["Name"].str.casefold() == name.casefold()
-                ) & (
-                    df_entries["Datum_raw"].dt.date == verteil_date
-                )
-                if mask.any():
-                    match_row = df_entries[mask].iloc[0]
-                    break
-
-            if match_row is None:
-                continue  # Kein Treffer ➜ Seite wird nicht beschriftet
-
-            tour_nr = match_row["Tour"]
-            if pd.isna(tour_nr) or str(tour_nr).strip() == "":
-                continue  # Keine Tour
-
-            # 3) Text unten rechts auf PDF schreiben
-            text = f"Tour {tour_nr}"
-            # kleine Margins
-            pt = fitz.Point(page.rect.width - 150, page.rect.height - 40)
-            page.insert_text(pt, text, fontsize=14, fontname="helv", color=(1, 0, 0))
-
-            matches.append({
-                "Seite": pg_idx,
-                "Name": match_row["Name"],
-                "Tour": tour_nr,
-            })
-
-        if not matches:
-            st.warning("Es konnten keine Namen–Tour-Matches gefunden werden ✋.")
-        else:
-            st.success("PDF wurde erfolgreich beschriftet ✔️")
-            df_matches = pd.DataFrame(matches)
-            st.dataframe(df_matches, use_container_width=True)
-
-        # 4) Download bereitstellen
-        output_pdf = doc.write()
-        st.download_button(
-            "📥 Beschriftete PDF herunterladen",
-            data=output_pdf,
-            file_name="dienstplaene_beschriftet.pdf",
-            mime="application/pdf",
-        )
-
-        # Optional: Matches als CSV anbieten
-        if matches:
-            csv_buf = io.StringIO()
-            df_matches.to_csv(csv_buf, index=False)
-            st.download_button(
-                "📥 Match-Tabelle (CSV)",
-                data=csv_buf.getvalue(),
-                file_name="matches.csv",
-                mime="text/csv",
-            )
+            st.error("Keine gültigen Daten in der Excel");
