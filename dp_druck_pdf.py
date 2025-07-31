@@ -198,7 +198,7 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, names: List[str], tours: List[str]
 # Datei‑Uploads
 # ──────────────────────────────────────────────────────────────────────────────
 pdf_file = st.file_uploader("📑 PDF hochladen", type=["pdf"], key="pdf")
-excel_file = st.file_uploader("📊 Excel hochladen", type=["xlsx", "xlsm"], key="excel")
+excel_file = st.file_uploader("📊 Tourplan -Excel hochladen welchen den Wochentag zum verteilen enthält", type=["xlsx", "xlsm"], key="excel")
 
 if not pdf_file:
     st.info("👉 Bitte zuerst ein PDF hochladen.")
