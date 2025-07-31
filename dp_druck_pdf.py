@@ -14,7 +14,7 @@ import streamlit as st
 from PIL import Image, ImageDraw
 
 # ────────────────────────────────────────────────────────────────
-# Tesseract Pfad
+# Tesseract Pfad
 # ────────────────────────────────────────────────────────────────
 TESS_CMD = shutil.which("tesseract")
 if TESS_CMD:
@@ -24,7 +24,7 @@ else:
     st.stop()
 
 # ────────────────────────────────────────────────────────────────
-# Streamlit‑Grundlayout (ohne Zusatz‑Markdown)
+# Streamlit-Grundlayout (ohne Zusatz-Markdown)
 # ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Touren zur Dienstplanverteilung", layout="wide")
 
@@ -61,7 +61,7 @@ NAME_PATTERN = re.compile(r"([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)\s+([ÄÖÜA-Z]
 
 def extract_entries(row: pd.Series) -> List[dict]:
     entries: List[dict] = []
-    datum = pd.to_datetime(row[14], errors="coerce")  # Spalte O
+    datum = pd.to_datetime(row[14], errors="coerce")  # Spalte O
     if pd.isna(datum):
         return entries
 
@@ -166,10 +166,18 @@ if st.button("Start"):
         if not tour_text:
             continue
 
-        # Annotation unten rechts
+        # Annotation unten rechts – kleiner, fett, weiter links
         bbox = page.bound()
-        text_point = fitz.Point(bbox.x1 - 50, bbox.y1 - 20)
-        page.insert_text(text_point, tour_text, fontname="helv", fontsize=10, fontfile=None, fill=(0, 0, 0), render_mode=3)
+        text_point = fitz.Point(bbox.x1 - 100, bbox.y1 - 20)  # 50 pt weiter links
+        page.insert_text(
+            text_point,
+            tour_text,
+            fontname="helvB",  # fett
+            fontsize=8,  # kleiner
+            fontfile=None,
+            fill=(0, 0, 0),
+            render_mode=3,
+        )
         matches += 1
 
     if matches == 0:
