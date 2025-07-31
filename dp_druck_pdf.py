@@ -1,142 +1,169 @@
 """
-Streamlit Utility: ROI-Ermittlung für OCR in einer PDF
-====================================================
-**Ziel**: Nur den Koordinaten-Ausschnitt (ROI) bestimmen, in dem später OCR
-laufen soll. Keine Excel-Verarbeitung, keine Annotation – reine
-Koordinaten-Erfassung.
+Streamlit App: PDF‑Namenssuche & Annotation (Fixe ROI)
+=====================================================
+Dieses Skript ist **deploy‑fertig für streamlit.io**.  Es nutzt einen **fest
+verdrahteten OCR‑Ausschnitt** und überspringt jegliche Canvas‑Interaktion.
 
-### Funktionsübersicht
-1. PDF hochladen (mehrseitig).  
-2. Erste Seite als Bild anzeigen.  
-3. Benutzer zieht einen Rahmen → ROI.  
-4. App zeigt die Koordinaten (Pixel im Original) an und bietet einen
-   JSON-Download (`roi.json`).
+### Ablauf
+1. **PDF** hochladen (mehrseitig, gescannt oder Bild‑PDF).  
+2. **Excel** hochladen mit Spalten `Name` und Wert‑Spalte (z. B. `Abteilung`).  
+3. Das Skript liest jede Seite im **fixen ROI** `(left=99, top=426, right=280, bottom=488)`
+   per Tesseract‑OCR aus, sucht nach Namen und druckt den zugehörigen Wert auf
+   dieselbe Seite.  
+4. Annotierte PDF steht zum Download bereit.
 
-### Deploy-Hinweise (Streamlit Cloud)
-* **requirements.txt**
-  ```
-  streamlit
-  streamlit-drawable-canvas
-  pymupdf  # fitz
-  pillow
-  ```
-* **packages.txt** (optional, nur falls später OCR nötig ist)
-  ```
-  tesseract-ocr
-  ```
+### Fester OCR‑Bereich
+```python
+ROI = (LEFT, TOP, RIGHT, BOTTOM) = (99, 426, 280, 488)  # Pixel bei 300 DPI
+```
 
-> **Kein OCR-Paket nötig** – wir ermitteln nur Koordinaten.
+### requirements.txt
+```
+streamlit
+pymupdf  # fitz
+pandas
+pytesseract
+pillow
+openpyxl
+```
+
+### packages.txt (Streamlit Cloud)
+```
+tesseract-ocr
+# deutsches Sprachpaket (empfohlen):
+tesseract-ocr-deu
+```
+
+> **Kein Poppler nötig** – Rendering und Manipulation übernimmt **PyMuPDF**.
 """
 
 from __future__ import annotations
 
 # -----------------------------------------------------------------------------
-# Monkey-Patch für `streamlit_drawable_canvas` ↔ Streamlit ≥1.32
-# -----------------------------------------------------------------------------
-import base64
-import io as _io
-from PIL import Image as _PIL_Image
-import streamlit.elements.image as _st_img
-
-if not hasattr(_st_img, "image_to_url"):
-    def _image_to_url(img, *args, **kwargs):  # noqa: D401,E501
-        """Lightweight Ersatz: Bild (PIL/numpy) → data-URL (PNG)."""
-        if isinstance(img, _PIL_Image.Image):
-            pil_img = img
-        else:
-            try:
-                import numpy as np
-                if isinstance(img, np.ndarray):
-                    pil_img = _PIL_Image.fromarray(img)
-                else:
-                    raise TypeError
-            except Exception as exc:
-                raise TypeError("Unsupported image type for image_to_url") from exc
-        buf = _io.BytesIO()
-        pil_img.save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode()
-        return f"data:image/png;base64,{b64}"
-
-    _st_img.image_to_url = _image_to_url  # type: ignore[attr-defined]
-
-# -----------------------------------------------------------------------------
 # Imports
 # -----------------------------------------------------------------------------
-import json
+import io
+import re
 from typing import Tuple
 
 import fitz  # PyMuPDF
+import pandas as pd
+import pytesseract
 import streamlit as st
 from PIL import Image
-from streamlit_drawable_canvas import st_canvas
+
+# -----------------------------------------------------------------------------
+# Feste ROI‑Koordinaten (Pixel bezogen auf 300 DPI‑Renderebene)
+# -----------------------------------------------------------------------------
+ROI: Tuple[int, int, int, int] = (99, 426, 280, 488)  # (left, top, right, bottom)
 
 # -----------------------------------------------------------------------------
 # Streamlit UI
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="OCR-ROI-Finder", layout="centered")
+st.set_page_config(page_title="PDF‑Namenssuche (Fixe ROI)", layout="centered")
 
-st.title("📐 OCR-ROI in PDF bestimmen")
+st.title("🔍 PDF‑Namenssuche & Annotation – Fixe ROI")
 
 with st.expander("Anleitung", expanded=False):
     st.markdown(
-        """
-        1. **PDF hochladen** – idealerweise die finale Vorlage.
-        2. Rahmen ziehen, wo auf jeder Seite OCR ausgeführt werden soll.
-        3. Koordinaten kopieren oder als JSON herunterladen.
+        f"""
+        1. **PDF hochladen** – mehrseitig, gescannt oder als Bild‑PDF.
+        2. **Excel hochladen** mit Spalten *Name* und Wert (z. B. *Abteilung*).
+        3. Das Script durchsucht **nur** den Bereich
+           `x = {ROI[0]}:{ROI[2]}`, `y = {ROI[1]}:{ROI[3]}` (Pixel in 300 DPI)
+           jeder Seite nach den Namen.
+        4. Wird ein Name gefunden, wird der Wert auf die Seite geschrieben und
+           du erhältst eine annotierte PDF zum Download.
         """
     )
 
+# -----------------------------------------------------------------------------
+# Datei‑Uploads
+# -----------------------------------------------------------------------------
 pdf_file = st.file_uploader("PDF hochladen", type=["pdf"], key="pdf")
+excel_file = st.file_uploader("Excel‑Datei hochladen", type=["xlsx", "xls"], key="excel")
 
-if pdf_file:
-    pdf_bytes = pdf_file.read()
-
+if pdf_file and excel_file:
+    # Excel einlesen
     try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    except Exception as exc:
-        st.error(f"PDF konnte nicht gelesen werden: {exc}")
+        df = pd.read_excel(excel_file)
+    except Exception as e:
+        st.error(f"Excel konnte nicht eingelesen werden: {e}")
         st.stop()
 
-    # Erste Seite als Vorschau (150 dpi)
-    first_pix = doc[0].get_pixmap(dpi=150)
-    first_img = Image.frombytes("RGB", [first_pix.width, first_pix.height], first_pix.samples)
+    if df.empty:
+        st.warning("Die Excel‑Datei enthält keine Daten.")
+        st.stop()
 
-    st.subheader("1️⃣ ROI zeichnen")
-    CANVAS_WIDTH = 600
-    ratio = CANVAS_WIDTH / first_img.width
+    st.subheader("Parameter wählen")
+    col1, col2 = st.columns(2)
+    with col1:
+        name_col = st.selectbox("Spalte mit Namen", df.columns)
+    with col2:
+        value_col = st.selectbox("Spalte mit einzutragendem Wert", df.columns, index=min(1, len(df.columns) - 1))
 
-    canvas_result = st_canvas(
-        fill_color="",
-        stroke_width=3,
-        stroke_color="#FF0000",
-        background_image=first_img.resize((CANVAS_WIDTH, int(first_img.height * ratio))),
-        update_streamlit=True,
-        height=int(first_img.height * ratio),
-        width=CANVAS_WIDTH,
-        drawing_mode="rect",
-        key="canvas",
-    )
+    x_position = st.number_input("X‑Position (Pt)", 0, 600, value=50)
+    y_position = st.number_input("Y‑Position (Pt)", 0, 800, value=50)
+    font_size = st.number_input("Schriftgröße (Pt)", 6, 48, value=12)
 
-    roi: Tuple[int, int, int, int] | None = None
-    if canvas_result.json_data and canvas_result.json_data.get("objects"):
-        rect = canvas_result.json_data["objects"][-1]
-        l_disp, t_disp = rect["left"], rect["top"]
-        w_disp, h_disp = rect["width"], rect["height"]
+    case_sensitive = st.checkbox("Groß-/Kleinschreibung beachten", value=False)
 
-        left, top = int(l_disp / ratio), int(t_disp / ratio)
-        right = int((l_disp + w_disp) / ratio)
-        bottom = int((t_disp + h_disp) / ratio)
-        roi = (left, top, right, bottom)
+    # Mapping Name → Wert
+    name_map = {
+        (str(r[name_col]) if case_sensitive else str(r[name_col]).lower()): r[value_col]
+        for _, r in df.iterrows() if pd.notna(r[name_col])
+    }
 
-    if roi:
-        st.success(f"ROI: x={roi[0]}:{roi[2]}, y={roi[1]}:{roi[3]} (Pixel im Original)")
+    if st.button("🚀 Starten"):
+        with st.spinner("Verarbeite PDF… bitte warten"):
+            pdf_bytes = pdf_file.read()
+            try:
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            except Exception as e:
+                st.error(f"PDF konnte nicht geöffnet werden: {e}")
+                st.stop()
 
-        roi_json = json.dumps({"left": roi[0], "top": roi[1], "right": roi[2], "bottom": roi[3]}, indent=2)
-        st.download_button("📥 ROI als JSON herunterladen", roi_json, file_name="roi.json", mime="application/json")
+            # Durch jede Seite iterieren
+            for page_idx in range(len(doc)):
+                page = doc[page_idx]
 
-        with st.expander("Vorschau des zugeschnittenen Bereichs"):
-            # Quick Crop aus der Vorschau (nur zum visuellen Check)
-            crop_preview = first_img.crop(roi)
-            st.image(crop_preview, caption="Zur Kontrolle – nur Seite 1")
-    else:
-        st.info("Bitte einen Rahmen zeichnen, um die Koordinaten anzuzeigen.")
+                # Seite als 300 DPI‑Bild
+                pix = page.get_pixmap(dpi=300)
+                page_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+                # ROI ausscheiden
+                crop_img = page_img.crop(ROI)
+
+                # OCR im ROI
+                ocr_text = pytesseract.image_to_string(crop_img, lang="deu")
+                search_space = ocr_text if case_sensitive else ocr_text.lower()
+
+                # Namen suchen
+                for search_name, value in name_map.items():
+                    pattern = rf"\b{re.escape(search_name)}\b"
+                    if re.search(pattern, search_space):
+                        page.insert_text(
+                            (x_position, y_position),
+                            str(value),
+                            fontsize=font_size,
+                            fontname="helv",
+                            fill=(0, 0, 0),
+                        )
+                        break  # nur erster Treffer pro Seite
+
+            # Annotierte PDF speichern
+            output_buffer = io.BytesIO()
+            doc.save(output_buffer)
+            doc.close()
+            output_buffer.seek(0)
+
+        st.success("Fertig! Die PDF ist annotiert.")
+        st.download_button(
+            label="📥 Annotierte PDF herunterladen",
+            data=output_buffer,
+            file_name="annotiert.pdf",
+            mime="application/pdf",
+        )
+
+else:
+    st.info("Bitte PDF und Excel hochladen, um zu starten.")
