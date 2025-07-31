@@ -192,11 +192,11 @@ with colB:
 verteil_date: date = st.date_input("📅 Dienstpläne verteilen am:", value=date.today())
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Haupt‑Button – OCR, Excel, Match & Annotate
+# Haupt-Button – OCR, Excel, Match & Annotate
 # ──────────────────────────────────────────────────────────────────────────────
-if st.button("🚀 OCR & PDF beschriften", type="primary"):
+if st.button("🚀 OCR & PDF beschriften", type="primary"):
     if not excel_file:
-        st.error("⚠️ Bitte auch die Excel‑Datei hochladen, bevor du startest.")
+        st.error("⚠️ Bitte auch die Excel-Datei hochladen, bevor du startest.")
         st.stop()
 
     with st.spinner("Verarbeite PDF & Excel …"):
@@ -204,7 +204,7 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
         try:
             xl_df = pd.read_excel(excel_file, engine="openpyxl", header=None)
         except Exception as exc:
-            st.error(f"Excel‑Datei konnte nicht gelesen werden: {exc}")
+            st.error(f"Excel-Datei konnte nicht gelesen werden: {exc}")
             st.stop()
 
         entries: List[dict] = []
@@ -218,19 +218,21 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
         # 2) PDF öffnen & OCR
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         roi = (x1, y1, x2, y2)
-        matches: list[dict] = []  # Für Ergebnis‑Tabelle
+        matches: list[dict] = []  # Für Ergebnis-Tabelle
 
         for pg_idx, page in enumerate(doc, start=1):
             pix = page.get_pixmap(dpi=300)
             pil_page = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            text_roi = pytesseract.image_to_string(pil_page.crop(roi), lang="deu").strip()
+            text_roi = pytesseract.image_to_string(
+                pil_page.crop(roi), lang="deu"
+            ).strip()
 
             # Namen extrahieren (Liste vollständiger Namen)
             names_found = [" ".join(m) for m in NAME_PATTERN.findall(text_roi)]
             if not names_found:
                 continue  # Keine Namen ➜ nächste Seite
 
-            # Versuche, einen Namen im Excel mit selbem Verteilungs‑Datum zu finden
+            # Versuche, einen Namen im Excel mit selbem Verteilungs-Datum zu finden
             match_row = None
             for name in names_found:
                 mask = (
@@ -250,19 +252,27 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
                 continue  # Keine Tour
 
             # 3) Text unten rechts auf PDF schreiben
-            text = f"Tour {tour_nr}"
-            # kleine Margins
-            pt = fitz.Point(page.rect.width - 150, page.rect.height - 40)
-            page.insert_text(pt, text, fontsize=14, fontname="helv", color=(1, 0, 0))
+            text = f"{tour_nr}"  # Wort „Tour“ weggelassen
+            # kleine Margins – 100 px weiter nach links verschoben
+            pt = fitz.Point(page.rect.width - 250, page.rect.height - 40)
+            page.insert_text(
+                pt,
+                text,
+                fontsize=14,
+                fontname="helvB",  # Helvetica-Bold
+                color=(1, 0, 0),
+            )
 
-            matches.append({
-                "Seite": pg_idx,
-                "Name": match_row["Name"],
-                "Tour": tour_nr,
-            })
+            matches.append(
+                {
+                    "Seite": pg_idx,
+                    "Name": match_row["Name"],
+                    "Tour": tour_nr,
+                }
+            )
 
         if not matches:
-            st.warning("Es konnten keine Namen–Tour‑Matches gefunden werden ✋.")
+            st.warning("Es konnten keine Namen–Tour-Matches gefunden werden ✋.")
         else:
             st.success("PDF wurde erfolgreich beschriftet ✔️")
             df_matches = pd.DataFrame(matches)
@@ -282,7 +292,7 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
             csv_buf = io.StringIO()
             df_matches.to_csv(csv_buf, index=False)
             st.download_button(
-                "📥 Match‑Tabelle (CSV)",
+                "📥 Match-Tabelle (CSV)",
                 data=csv_buf.getvalue(),
                 file_name="matches.csv",
                 mime="text/csv",
