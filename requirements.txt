@@ -1,6 +1,5 @@
 streamlit
 pymupdf  # fitz
-pandas
 pytesseract
+pandas
 pillow
-openpyxl
