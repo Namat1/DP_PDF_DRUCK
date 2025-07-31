@@ -10,7 +10,7 @@ End‑to‑End‑Workflow:
 3. **OCR** – Namen pro Seite auslesen & zwischen­speichern.
 4. **Excel parsen** – Fahrer + Datum + Tour‑Nr. extrahieren.
 5. **Verteilungs­datum wählen**.
-6. **Match & Annotate** – Namen ↔︎ Excel zeilen verbinden, Tour unten rechts auf jede PDF‑Seite schreiben.
+6. **Match & Annotate** – Namen ↔︎ Excel zeilen verbinden, Tour‑Nr. unten rechts auf jede PDF‑Seite schreiben.
 7. **Download** der beschrifteten PDF.
 
 ### Python‑Pakete (requirements.txt)
@@ -218,7 +218,7 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
         # 2) PDF öffnen & OCR
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         roi = (x1, y1, x2, y2)
-        matches: list[dict] = []  # Für Ergebnis-Tabelle
+        matches: List[dict] = []  # Für Ergebnis-Tabelle
 
         for pg_idx, page in enumerate(doc, start=1):
             pix = page.get_pixmap(dpi=300)
@@ -259,7 +259,7 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
                 pt,
                 text,
                 fontsize=14,
-                fontname="helvB",  # Helvetica-Bold
+                fontname="hebo",  # gültiger Alias für Helvetica-Bold
                 color=(1, 0, 0),
             )
 
@@ -282,18 +282,4 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
         output_pdf = doc.write()
         st.download_button(
             "📥 Beschriftete PDF herunterladen",
-            data=output_pdf,
-            file_name="dienstplaene_beschriftet.pdf",
-            mime="application/pdf",
-        )
-
-        # Optional: Matches als CSV anbieten
-        if matches:
-            csv_buf = io.StringIO()
-            df_matches.to_csv(csv_buf, index=False)
-            st.download_button(
-                "📥 Match-Tabelle (CSV)",
-                data=csv_buf.getvalue(),
-                file_name="matches.csv",
-                mime="text/csv",
-            )
+            data=output
