@@ -205,13 +205,10 @@ if not pdf_file:
 
 pdf_bytes = pdf_file.read()
 
-st.subheader("ROI definieren")
-x1 = st.number_input("x1 (links)", 0, 2000, value=200)
-y1 = st.number_input("y1 (oben)", 0, 3000, value=890)
-x2 = st.number_input("x2 (rechts)", x1 + 1, 2000, value=560)
-y2 = st.number_input("y2 (unten)", y1 + 1, 3000, value=980)
-
 verteil_date = st.date_input("Verteilungsdatum:", value=date.today())
+
+# Feste ROI-Werte (können bei Bedarf angepasst werden)
+x1, y1, x2, y2 = 200, 890, 560, 980
 
 if st.button("OCR & PDF beschriften", type="primary"):
     if not excel_file:
