@@ -121,50 +121,26 @@ def extract_entries(row: pd.Series) -> List[dict]:
 NAME_PATTERN = re.compile(r"([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)\s+([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)")
 
 def ocr_names_from_roi(pdf_bytes: bytes, roi: Tuple[int, int, int, int], dpi: int = 300) -> List[str]:
-    """
-    OCR für alle PDF‑Seiten im definierten ROI‑Bereich.
-    Erwartet roi im Format (x, y, w, h) – also linke obere Ecke + Breite & Höhe.
-    """
+    """OCR für alle PDF‑Seiten im definierten ROI‑Bereich."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     names = []
-
     for page_num in range(len(doc)):
         page = doc.load_page(page_num)
         pix = page.get_pixmap(dpi=dpi)
         pil_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-        # ROI umrechnen: (x, y, w, h) → (left, upper, right, lower)
-        x, y, w, h = roi
-        left = x
-        upper = y
-        right = x + w
-        lower = y + h
-
-        # Sicherheitsprüfung
-        W, H = pil_img.size
-        if not (0 <= left < right <= W and 0 <= upper < lower <= H):
-            raise ValueError(f"ROI {roi} ({left}, {upper}, {right}, {lower}) liegt außerhalb des Bildes ({W}×{H})")
-
-        # Bildausschnitt extrahieren
-        roi_img = pil_img.crop((left, upper, right, lower))
-
-        # OCR ausführen
+        roi_img = pil_img.crop(roi)
         try:
             text = pytesseract.image_to_string(roi_img, lang="deu+eng")
-        except Exception:
+        except:
             text = pytesseract.image_to_string(roi_img)
-
-        # Namen per Regex extrahieren
         matches = NAME_PATTERN.findall(text)
         if matches:
             name = f"{matches[0][0]} {matches[0][1]}"
             names.append(name)
         else:
             names.append("")
-
     doc.close()
     return names
-
 
 def parse_excel_data(excel_file) -> pd.DataFrame:
     """Excel-Datei parsen und Fahrer-Einträge extrahieren."""
@@ -247,12 +223,7 @@ pdf_bytes = pdf_file.read()
 # ──────────────────────────────────────────────────────────────────────────────
 # ROI-Koordinaten festlegen
 # ──────────────────────────────────────────────────────────────────────────────
-roi_box = (59, 264, 137, 53)
-
-
-
-    
-
+roi_box = (200, 890, 560, 980)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Verteilungs‑Datum (vom Nutzer bestimmen lassen)
