@@ -34,16 +34,7 @@ else:
 st.set_page_config(page_title="PDF Dienstplan Matcher", layout="wide")
 st.title("📄 Dienstpläne beschriften & verteilen")
 
-with st.expander("Kurze Anleitung", expanded=False):
-    st.markdown(
-        """
-        **Workflow**
-        1. PDF & Excel hochladen.
-        2. ROI auf Seite 1 definieren → Vorschau prüfen.
-        3. Verteilungs‑Datum auswählen.
-        4. *OCR & Annotate* starten → fertige PDF herunterladen.
-        """
-    )
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Hilfsfunktionen
