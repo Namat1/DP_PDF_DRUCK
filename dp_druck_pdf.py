@@ -1,35 +1,6 @@
 from __future__ import annotations
 
-"""
-Streamlit Utility – PDF‑Dienstplan Matcher
-=========================================
-End‑to‑End‑Workflow
-------------------
-1. **Dateien hochladen** – PDF (gescannter Dienstplan) **und** die zugehörige Excel‑Tabelle.
-2. **ROI festlegen** – Rechteck, in dem auf jeder PDF‑Seite der Fahrername steht.
-3. **OCR** – Namen pro Seite auslesen & zwischenspeichern.
-4. **Excel parsen** – Fahrer + Datum + Tour‑Nr. extrahieren.
-5. **Verteilungs­datum wählen**.
-6. **Match & Annotate** – Namen ↔︎ Excel‑Zeilen verbinden, Tour‑Nr. unten rechts auf jede PDF‑Seite schreiben.
-7. **Download** der annotierten PDF.
 
-### Python‑Pakete (requirements.txt)
-```
-streamlit
-pymupdf        # fitz
-pytesseract
-pandas
-pillow
-openpyxl
-```
-
-### System‑Pakete (packages.txt – Streamlit Cloud)
-```
-poppler-utils
-pytesseract-ocr
-pytesseract-ocr-deu
-```
-"""
 
 import io
 import re
@@ -218,7 +189,7 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, names: List[str], tours: List[str]
         if page_num < len(tours) and tours[page_num]:
             # Tour-Nr. unten rechts einfügen
             rect = page.rect
-            text_rect = fitz.Rect(rect.width - 350, rect.height - 50, rect.width - 210, rect.height - 10)
+            text_rect = fitz.Rect(rect.width - 350, rect.height - 41, rect.width - 210, rect.height - 1)
             
             page.insert_textbox(
                 text_rect,
