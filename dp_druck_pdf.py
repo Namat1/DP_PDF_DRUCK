@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 """
-Clean Streamlit Utility – PDF‑Dienstplan Matcher
+Clean Streamlit Utility – PDF-Dienstplan Matcher
 ================================================
-Minimal‑UI Work‑flow:
---------------------
-1. PDF & Excel hochladen
-2. ROI definieren
+Minimal-UI-Workflow
+------------------
+1. PDF & Excel hochladen
+2. ROI festlegen
 3. Verteilungs­datum wählen
-4. OCR → Tour‑Nr. unten rechts annotieren
+4. OCR → Tour-Nr. unten rechts annotieren
 5. Fertige PDF herunterladen
 """
 
@@ -34,19 +34,19 @@ warnings.filterwarnings(
 )
 
 # ────────────────────────────────────────────────────────────────
-# Tesseract path (needed on Streamlit Cloud)
+# Tesseract path (needed on Streamlit Cloud)
 # ────────────────────────────────────────────────────────────────
 TESS_CMD = shutil.which("tesseract")
 if TESS_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESS_CMD
 else:
-    st.error("Tesseract‑Executable nicht gefunden. Bitte installieren.")
+    st.error("Tesseract-Executable nicht gefunden. Bitte installieren.")
     st.stop()
 
 # ────────────────────────────────────────────────────────────────
 # Streamlit basic layout (minimal – no verbose markdown)
 # ────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="PDF Dienstplan Matcher", layout="wide")
+st.set_page_config(page_title="PDF Dienstplan Matcher", layout="wide")
 
 # ────────────────────────────────────────────────────────────────
 # Helper dictionaries & functions
@@ -62,17 +62,40 @@ WEEKDAYS_DE = {
 }
 
 def kw_year_sunday(d: datetime) -> Tuple[int, int]:
-    """KW‑Berechnung mit Sonntag als Wochen­start (ISO + 1 Tag)."""
+    """KW-Berechnung mit Sonntag als Wochen­start (ISO + 1 Tag)."""
     s = d + timedelta(days=1)
     return int(s.strftime("%V")), int(s.strftime("%G"))
 
 NAME_PATTERN = re.compile(r"([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)\s+([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)")
 
+# --- Namens­normalisierung / Vergleich ---------------------------------------
+
+def _normalize_name(n: str) -> str:
+    """Kleinschreibung, Mehrfach-Spaces → eine, deutsche Umlaute → ASCII."""
+    n = n.lower()
+    n = (
+        n.replace("ä", "ae")
+        .replace("ö", "oe")
+        .replace("ü", "ue")
+        .replace("ß", "ss")
+    )
+    n = re.sub(r"\s+", " ", n).strip()
+    return n
+
+def names_match(a: str, b: str) -> bool:
+    """Strenger Vergleich: erst voll, dann nur Nachname (robust gegen OCR-Fehler)."""
+    na, nb = _normalize_name(a), _normalize_name(b)
+    if na == nb:
+        return True
+    # Nachname (= letztes Token) vergleichen
+    return na.split()[-1] == nb.split()[-1]
+
+# --- Excel-Extraktion ---------------------------------------------------------
 
 def extract_entries(row: pd.Series) -> List[dict]:
-    """Extrahiert bis zu zwei Fahrer + Tour etc. aus einer Excel‑Zeile."""
+    """Extrahiert bis zu zwei Fahrer + Tour etc. aus einer Excel-Zeile."""
     out: List[dict] = []
-    datum = pd.to_datetime(row[14], errors="coerce")
+    datum = pd.to_datetime(row[14], errors="coerce")  # Spalte O (Index 14)
     if pd.isna(datum):
         return out
 
@@ -85,7 +108,7 @@ def extract_entries(row: pd.Series) -> List[dict]:
     uhrzeit = row[16] if len(row) > 16 else ""
     lkw = row[11] if len(row) > 11 else ""
 
-    def add(name):
+    def add(name: str):
         if name:
             out.append(
                 {
@@ -153,6 +176,9 @@ with colB:
 # ────────────────────────────────────────────────────────────────
 verteil_date: date = st.date_input("Verteilungs­datum", value=date.today())
 
+# Optional Debug-Switch
+DEBUG = st.checkbox("Debug anzeigen", value=False)
+
 # ────────────────────────────────────────────────────────────────
 # Start processing
 # ────────────────────────────────────────────────────────────────
@@ -165,7 +191,7 @@ if st.button("Start", type="primary"):
         try:
             xl_df = pd.read_excel(excel_file, engine="openpyxl", header=None)
         except Exception as exc:
-            st.error(f"Excel‑Fehler: {exc}")
+            st.error(f"Excel-Fehler: {exc}")
             st.stop()
 
     excel_entries: List[dict] = []
@@ -175,6 +201,10 @@ if st.button("Start", type="primary"):
     if not excel_entries:
         st.warning("Keine relevanten Daten in der Excel gefunden.")
         st.stop()
+
+    if DEBUG:
+        st.write("Gefundene Einträge im Excel (Auszug):")
+        st.write(pd.DataFrame(excel_entries).head())
 
     # ── OCR & annotate PDF ───────────────────────────────────────
     pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -194,39 +224,51 @@ if st.button("Start", type="primary"):
         try:
             text = pytesseract.image_to_string(crop, lang="deu")
         except Exception:
-            continue  # OCR‑Fehler
+            continue  # OCR-Fehler
 
         m = NAME_PATTERN.search(text)
         if not m:
+            if DEBUG:
+                st.write(f"Seite {i+1}: Kein Name erkannt → '{text.strip()[:50]}…'")
             continue
 
-        name = f"{m.group(1)} {m.group(2)}".strip()
+        ocr_name = f"{m.group(1)} {m.group(2)}".strip()
 
         match = next(
             (
                 e
                 for e in excel_entries
-                if e["Name"].lower() == name.lower()
+                if names_match(e["Name"], ocr_name)
                 and e["Datum_raw"].date() == verteil_date
             ),
             None,
         )
         if not match:
+            if DEBUG:
+                st.write(f"Seite {i+1}: Kein Match für '{ocr_name}'")
             continue
 
-        tour = str(match["Tour"]).strip()
-        if not tour:
+        tour_raw = str(match["Tour"]).strip()
+        tour_text = re.sub(r"\.0$", "", tour_raw)  # 12.0 → 12
+        if not tour_text:
+            if DEBUG:
+                st.write(f"Seite {i+1}: Leere Tour für '{ocr_name}'")
             continue
 
-        # annotate bottom‑right
         bbox = page.bound()
         dest = fitz.Point(bbox.x1 - 50, bbox.y1 - 20)
-        page.insert_text(dest, tour, fontsize=9, fontname="helv", fill=(0, 0, 0))
+        page.insert_text(dest, tour_text, fontsize=9, fontname="helv", fill=(0, 0, 0))
         matches += 1
 
     if matches == 0:
-        st.warning("Keine Namen‑Tour‑Treffer gefunden.")
+        st.warning("Keine Namen-Tour-Treffer gefunden.")
         st.stop()
 
     out = io.BytesIO()
-    pdf
+    pdf_doc.save(out)
+    st.download_button(
+        "Fertige PDF herunterladen",
+        data=out.getvalue(),
+        file_name="dienstplaene.pdf",
+        mime="application/pdf",
+    )
