@@ -3,9 +3,9 @@ from __future__ import annotations
 import io
 import re
 import shutil
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, time
 from functools import lru_cache
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Optional
 
 import fitz  # PyMuPDF
 import pandas as pd
@@ -50,6 +50,30 @@ def kw_year_sunday(d: datetime) -> Tuple[int, int]:
     s = d + timedelta(days=1)
     return int(s.strftime("%V")), int(s.strftime("%G"))
 
+def format_time(value) -> str:
+    """
+    Konvertiert einen Excel-Zeitwert in einen 'HH:MM'-String.
+    Behandelt datetime.time, datetime.datetime, float und String-Eingaben.
+    """
+    if pd.isna(value):
+        return ""
+    if isinstance(value, time):
+        return value.strftime("%H:%M")
+    if isinstance(value, (datetime, pd.Timestamp)):
+        return value.strftime("%H:%M")
+    if isinstance(value, (int, float)):
+        fractional_part = value % 1
+        total_minutes = round(fractional_part * 1440)
+        hours = total_minutes // 60
+        minutes = total_minutes % 60
+        return f"{hours:02d}:{minutes:02d}"
+    if isinstance(value, str):
+        try:
+            return pd.to_datetime(value).strftime("%H:%M")
+        except (ValueError, TypeError):
+            return value
+    return str(value)
+
 def extract_entries(row: pd.Series) -> List[dict]:
     """Liest bis zu **2 Fahrer** aus einer Excel‑Zeile (Spalten hart codiert)."""
     entries: List[dict] = []
@@ -59,45 +83,37 @@ def extract_entries(row: pd.Series) -> List[dict]:
         return entries
 
     kw, year = kw_year_sunday(datum)
-    datum_fmt = datum.strftime("%d.%m.%Y")
     weekday = WEEKDAYS_DE.get(datum.day_name(), datum.day_name())
-    datum_lang = f"{weekday}, {datum_fmt}"
+    datum_lang = f"{weekday}, {datum.strftime('%d.%m.%Y')}"
 
     tour = row[15] if len(row) > 15 else ""
-    uhrzeit = row[16] if len(row) > 16 else ""
+    uhrzeit = format_time(row[16]) if len(row) > 16 else ""
     lkw = row[11] if len(row) > 11 else ""
+
+    base_entry = {
+        "KW": kw,
+        "Jahr": year,
+        "Datum": datum_lang,
+        "Datum_raw": datum,
+        "Wochentag": weekday,
+        "Tour": tour,
+        "Uhrzeit": uhrzeit,
+        "LKW": lkw,
+    }
 
     # Fahrer 1 (D,E)
     if pd.notna(row[3]) and pd.notna(row[4]):
         name = f"{str(row[3]).strip()} {str(row[4]).strip()}"
-        entries.append(
-            {
-                "KW": kw,
-                "Jahr": year,
-                "Datum": datum_lang,
-                "Datum_raw": datum,
-                "Name": name,
-                "Tour": tour,
-                "Uhrzeit": uhrzeit,
-                "LKW": lkw,
-            }
-        )
+        entry1 = base_entry.copy()
+        entry1["Name"] = name
+        entries.append(entry1)
 
     # Fahrer 2 (G,H)
     if pd.notna(row[6]) and pd.notna(row[7]):
         name = f"{str(row[6]).strip()} {str(row[7]).strip()}"
-        entries.append(
-            {
-                "KW": kw,
-                "Jahr": year,
-                "Datum": datum_lang,
-                "Datum_raw": datum,
-                "Name": name,
-                "Tour": tour,
-                "Uhrzeit": uhrzeit,
-                "LKW": lkw,
-            }
-        )
+        entry2 = base_entry.copy()
+        entry2["Name"] = name
+        entries.append(entry2)
 
     return entries
 
@@ -108,31 +124,21 @@ def ocr_names_from_roi(pdf_bytes: bytes, roi: Tuple[int, int, int, int], dpi: in
     """OCR für alle PDF‑Seiten im definierten ROI‑Bereich."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     names = []
-    
     for page_num in range(len(doc)):
         page = doc.load_page(page_num)
         pix = page.get_pixmap(dpi=dpi)
         pil_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        
-        # ROI ausschneiden
         roi_img = pil_img.crop(roi)
-        
-        # OCR mit deutschem Sprachmodell
         try:
             text = pytesseract.image_to_string(roi_img, lang="deu+eng")
         except:
-            # Fallback ohne deutsche Sprache
             text = pytesseract.image_to_string(roi_img)
-        
-        # Namen extrahieren
         matches = NAME_PATTERN.findall(text)
         if matches:
-            # Ersten gefundenen Namen nehmen
             name = f"{matches[0][0]} {matches[0][1]}"
             names.append(name)
         else:
             names.append("")
-    
     doc.close()
     return names
 
@@ -140,54 +146,54 @@ def parse_excel_data(excel_file) -> pd.DataFrame:
     """Excel-Datei parsen und Fahrer-Einträge extrahieren."""
     df = pd.read_excel(excel_file, header=None)
     all_entries = []
-    
     for _, row in df.iterrows():
         entries = extract_entries(row)
         all_entries.extend(entries)
-    
     return pd.DataFrame(all_entries)
 
 def fuzzy_match_name(ocr_name: str, excel_names: List[str]) -> str:
     """Einfaches Fuzzy Matching für Namen."""
     if not ocr_name.strip():
         return ""
-    
     ocr_words = set(ocr_name.upper().split())
     best_match = ""
     best_score = 0
-    
     for excel_name in excel_names:
         excel_words = set(excel_name.upper().split())
-        # Anzahl übereinstimmender Wörter
         overlap = len(ocr_words & excel_words)
         if overlap > best_score:
             best_score = overlap
             best_match = excel_name
-    
     return best_match if best_score > 0 else ""
 
-def annotate_pdf_with_tours(pdf_bytes: bytes, names: List[str], tours: List[str]) -> bytes:
-    """PDF mit Tour-Nummern annotieren."""
+def annotate_pdf_with_tours(pdf_bytes: bytes, annotations: List[Optional[Dict[str, str]]]) -> bytes:
+    """PDF mit Tour-Informationen (Wochentag, Tour, Uhrzeit) annotieren."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     
-    for page_num in range(len(doc)):
-        page = doc.load_page(page_num)
-        
-        if page_num < len(tours) and tours[page_num]:
+    for page_num, annotation in enumerate(annotations):
+        if page_num < len(doc) and annotation:
+            page = doc.load_page(page_num)
+            
+            tour = annotation.get("tour", "")
+            weekday = annotation.get("weekday", "")
+            uhrzeit = annotation.get("time", "")
+            
+            # Text für die Beschriftung zusammenbauen
+            text_to_insert = f"Tour {weekday} - {tour} - {uhrzeit} Uhr"
+            
             # Tour-Nr. unten rechts einfügen
             rect = page.rect
-            # Diese Koordinaten können Sie bei Bedarf anpassen
-            text_rect = fitz.Rect(rect.width - 550, rect.height - 41, rect.width - 150, rect.height - 1)
+            text_rect = fitz.Rect(rect.width - 550, rect.height - 41, rect.width - 20, rect.height - 1)
             
             page.insert_textbox(
                 text_rect,
-                f"Tour: {tours[page_num]}",
+                text_to_insert,
                 fontsize=12,
+                fontname="helv-bold",
                 color=(1, 0, 0),  # Rot
                 align=fitz.TEXT_ALIGN_RIGHT
             )
     
-    # PDF in Bytes umwandeln
     output_buffer = io.BytesIO()
     doc.save(output_buffer)
     doc.close()
@@ -198,7 +204,7 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, names: List[str], tours: List[str]
 # Datei‑Uploads
 # ──────────────────────────────────────────────────────────────────────────────
 pdf_file = st.file_uploader("📑 PDF hochladen", type=["pdf"], key="pdf")
-excel_file = st.file_uploader("📊 Tourplan -Excel hochladen welchen den Wochentag zum verteilen enthält", type=["xlsx", "xlsm"], key="excel")
+excel_file = st.file_uploader("📊 Tourplan-Excel hochladen", type=["xlsx", "xlsm"], key="excel")
 
 if not pdf_file:
     st.info("👉 Bitte zuerst ein PDF hochladen.")
@@ -209,8 +215,6 @@ pdf_bytes = pdf_file.read()
 # ──────────────────────────────────────────────────────────────────────────────
 # ROI-Koordinaten festlegen
 # ──────────────────────────────────────────────────────────────────────────────
-# HINWEIS: Passen Sie diese Werte an Ihr PDF-Layout an.
-# Die Werte sind (x1, y1, x2, y2) -> (links, oben, rechts, unten)
 roi_box = (200, 890, 560, 980)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -228,44 +232,36 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
         st.error("⚠️ Bitte auch die Excel‑Datei hochladen!")
         st.stop()
     
-    # OCR und Excel-Verarbeitung im Hintergrund laufen lassen
     with st.spinner("🔍 OCR läuft und Excel wird verarbeitet..."):
-        # OCR für alle Seiten
         ocr_names = ocr_names_from_roi(pdf_bytes, roi_box)
-        
-        # Excel-Daten laden
         excel_data = parse_excel_data(excel_file)
-        
-        # Verteilungsdatum zu datetime konvertieren
-        verteil_datetime = datetime.combine(verteil_date, datetime.min.time())
-        
-        # Nur Einträge für das Verteilungsdatum filtern
         filtered_data = excel_data[excel_data['Datum_raw'].dt.date == verteil_date]
     
     if filtered_data.empty:
         st.warning(f"⚠️ Keine Einträge für {verteil_date.strftime('%d.%m.%Y')} in der Excel-Datei gefunden!")
     else:
-        # Namen-Matching und Tour-Zuordnung
         excel_names = filtered_data['Name'].unique().tolist()
-        tours = []
+        page_annotations = []
         
         for ocr_name in ocr_names:
             matched_name = fuzzy_match_name(ocr_name, excel_names)
             if matched_name:
                 match_entry = filtered_data[filtered_data['Name'] == matched_name].iloc[0]
-                tours.append(str(match_entry['Tour']))
+                annotation_info = {
+                    "tour": str(match_entry['Tour']),
+                    "weekday": str(match_entry['Wochentag']),
+                    "time": str(match_entry['Uhrzeit'])
+                }
+                page_annotations.append(annotation_info)
             else:
-                tours.append("")
+                page_annotations.append(None)
         
-        # Zählen, ob Übereinstimmungen gefunden wurden
-        matched_count = sum(1 for tour in tours if tour)
+        matched_count = sum(1 for anno in page_annotations if anno)
         
         if matched_count > 0:
             with st.spinner("📝 PDF wird beschriftet..."):
-                # PDF annotieren
-                annotated_pdf = annotate_pdf_with_tours(pdf_bytes, ocr_names, tours)
+                annotated_pdf = annotate_pdf_with_tours(pdf_bytes, page_annotations)
             
-            # --- NUR DER DOWNLOAD-BUTTON WIRD ANGEZEIGT ---
             st.download_button(
                 label="📥 Beschriftete PDF herunterladen",
                 data=annotated_pdf,
@@ -281,5 +277,4 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
 # Footer
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher v1.0 – Automatische Tour-Zuordnung*")
-
+st.markdown("*PDF Dienstplan Matcher v1.2 – Erweiterte Tour-Beschriftung*")
