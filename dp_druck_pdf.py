@@ -30,7 +30,8 @@ from PIL import Image, ImageDraw
 # Suppress noisy library warnings
 # ────────────────────────────────────────────────────────────────
 warnings.filterwarnings(
-    "ignore", category=UserWarning, module="openpyxl.worksheet.header_footer"")
+    "ignore", category=UserWarning, module="openpyxl.worksheet.header_footer"
+)
 
 # ────────────────────────────────────────────────────────────────
 # Tesseract path (needed on Streamlit Cloud)
@@ -228,8 +229,4 @@ if st.button("Start", type="primary"):
         st.stop()
 
     out = io.BytesIO()
-    pdf_doc.save(out)
-    st.download_button(
-        "PDF herunterladen", data=out.getvalue(), file_name="dienstplaene.pdf", mime="application/pdf"
-    )
-    
+    pdf
