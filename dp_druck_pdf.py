@@ -1,8 +1,3 @@
-Absolut. Hier ist der vollständige Code, der die ROI-Auswahl durch fest hinterlegte Koordinaten ersetzt und nach der Verarbeitung nur noch den Download-Button anzeigt.
-
------
-
-```python
 from __future__ import annotations
 
 import io
@@ -288,4 +283,3 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
 st.markdown("---")
 st.markdown("*PDF Dienstplan Matcher v1.0 – Automatische Tour-Zuordnung*")
 
-```
