@@ -189,7 +189,7 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, names: List[str], tours: List[str]
         if page_num < len(tours) and tours[page_num]:
             # Tour-Nr. unten rechts einfügen
             rect = page.rect
-            text_rect = fitz.Rect(rect.width - 350, rect.height - 41, rect.width - 210, rect.height - 1)
+            text_rect = fitz.Rect(rect.width - 450, rect.height - 41, rect.width - 50, rect.height - 1)
             
             page.insert_textbox(
                 text_rect,
