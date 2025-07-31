@@ -31,6 +31,48 @@ tesseract-ocr-deu
 
 from __future__ import annotations
 
+"""Hotfix für Streamlit ≥1.32
+-----------------------------
+`streamlit_drawable_canvas` verwendet intern `st_image.image_to_url`,
+diese Funktion wurde in neueren Streamlit‑Versionen entfernt.  Das
+nachfolgende Monkey‑Patch stellt sie wieder bereit, damit die Canvas‑
+Komponente auf **Streamlit Cloud** funktioniert, ohne ältere Versionen
+pinnen zu müssen.
+"""
+
+import base64
+import io as _io
+from PIL import Image as _PIL_Image
+import streamlit.elements.image as _st_image_element
+
+if not hasattr(_st_image_element, "image_to_url"):
+    def _image_to_url(img, width=None, clamp=False, channels="RGB", output_format="auto"):
+        """Ersatz für die entfernte Streamlit‑Funktion.  Wandelt ein PIL‑Bild
+        oder eine NumPy‑Array in eine data‑URL um, ausreichend für
+        `streamlit_drawable_canvas`.
+        """
+        if isinstance(img, _PIL_Image.Image):
+            buf = _io.BytesIO()
+            img.save(buf, format="PNG")
+            data = buf.getvalue()
+        else:
+            # Fallback: Versuche ndarray → PIL
+            try:
+                import numpy as np
+                if isinstance(img, np.ndarray):
+                    pil_img = _PIL_Image.fromarray(img)
+                    buf = _io.BytesIO()
+                    pil_img.save(buf, format="PNG")
+                    data = buf.getvalue()
+                else:
+                    raise TypeError("Unsupported image type for fallback image_to_url")
+            except Exception as exc:
+                raise TypeError("Unsupported image type for fallback image_to_url") from exc
+        b64 = base64.b64encode(data).decode()
+        return f"data:image/png;base64,{b64}"
+
+    _st_image_element.image_to_url = _image_to_url
+
 import io
 import re
 from typing import Tuple
