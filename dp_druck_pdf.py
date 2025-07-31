@@ -232,3 +232,4 @@ if st.button("Start", type="primary"):
     st.download_button(
         "PDF herunterladen", data=out.getvalue(), file_name="dienstplaene.pdf", mime="application/pdf"
     )
+    
