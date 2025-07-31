@@ -1,4 +1,8 @@
+Absolut. Hier ist der vollständige Code, der die ROI-Auswahl durch fest hinterlegte Koordinaten ersetzt und nach der Verarbeitung nur noch den Download-Button anzeigt.
 
+-----
+
+```python
 from __future__ import annotations
 
 import io
@@ -208,35 +212,11 @@ if not pdf_file:
 pdf_bytes = pdf_file.read()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Seite 1 rendern & ROI auswählen
+# ROI-Koordinaten festlegen
 # ──────────────────────────────────────────────────────────────────────────────
-@lru_cache(maxsize=2)
-def render_page1(pdf: bytes, dpi: int = 300):
-    doc = fitz.open(stream=pdf, filetype="pdf")
-    page = doc.load_page(0)
-    pix = page.get_pixmap(dpi=dpi)
-    pil_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    return pil_img, pix.width, pix.height
-
-page1_img, W, H = render_page1(pdf_bytes)
-
-st.subheader("1️⃣ ROI für die Namenserkennung definieren")
-colA, colB = st.columns([1, 2])
-
-with colA:
-    st.write("**Größe von Seite 1:**", f"{W} × {H} px")
-    x1 = st.number_input("x1 (links)", 0, W - 1, value=st.session_state.get("x1", 200))
-    y1 = st.number_input("y1 (oben)", 0, H - 1, value=st.session_state.get("y1", 890))
-    x2 = st.number_input("x2 (rechts)", x1 + 1, W, value=st.session_state.get("x2", 560))
-    y2 = st.number_input("y2 (unten)", y1 + 1, H, value=st.session_state.get("y2", 980))
-    st.session_state.update({"x1": x1, "y1": y1, "x2": x2, "y2": y2})
-
-with colB:
-    roi_box = (x1, y1, x2, y2)
-    overlay = page1_img.copy()
-    ImageDraw.Draw(overlay).rectangle(roi_box, outline="red", width=5)
-    st.image(overlay, caption="Definierter Bereich (ROI) auf Seite 1", use_column_width=True)
-    st.image(page1_img.crop(roi_box), caption="Vorschau des ROI-Ausschnitts", use_column_width=True)
+# HINWEIS: Passen Sie diese Werte an Ihr PDF-Layout an.
+# Die Werte sind (x1, y1, x2, y2) -> (links, oben, rechts, unten)
+roi_box = (200, 890, 560, 980)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Verteilungs‑Datum (vom Nutzer bestimmen lassen)
@@ -307,3 +287,5 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown("*PDF Dienstplan Matcher v1.0 – Automatische Tour-Zuordnung*")
+
+```
