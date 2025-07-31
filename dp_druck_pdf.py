@@ -193,12 +193,12 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, annotations: List[Optional[Dict[st
             
             # Tour-Nr. unten rechts einfügen
             rect = page.rect
-            text_rect = fitz.Rect(rect.width - 550, rect.height - 41, rect.width - 20, rect.height - 1)
+            text_rect = fitz.Rect(rect.width - 700, rect.height - 60, rect.width - 20, rect.height - 10)
             
             page.insert_textbox(
                 text_rect,
                 text_to_insert,
-                fontsize=12,
+                fontsize=11,
                 fontname="hebo",
                 color=(1, 0, 0),  # Rot
                 align=fitz.TEXT_ALIGN_RIGHT
