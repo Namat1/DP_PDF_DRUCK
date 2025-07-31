@@ -4,4 +4,4 @@ pytesseract
 pandas
 pillow
 tesseract-ocr
-tesseract-ocr-deu
+
