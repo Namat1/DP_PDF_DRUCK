@@ -1,21 +1,16 @@
 """
-Streamlit App: PDF-Namenssuche & Annotation (Fixe ROI) + Trefferliste
-====================================================================
-Dieses Skript ist **deploy-fertig für streamlit.io** und listet nach dem
-Durchlauf **alle im PDF gefundenen Namen** auf.
+Streamlit App: PDF-Namenssuche & Annotation (Fixe ROI) + Vorschau der Namen
+============================================================================
+Die App zeigt **sofort nach dem Hochladen der Excel-Datei** die Liste aller
+Namen an, die später im PDF gesucht werden. Erst danach kann der Nutzer auf
+**Starten** klicken, um die PDF zu verarbeiten.
 
-### Neuerungen
-* **Trefferliste:** Nach der OCR-Suche wird unterhalb des Download-Buttons
-  eine Liste aller eindeutigen Namen angezeigt, die im PDF gefunden wurden.
-* **Mapping in Originalschreibweise:** Auch bei `case_sensitive = False`
-  werden Namen in der Schreibweise aus der Excel-Tabelle ausgegeben.
-
-### Ablauf (unverändert)
-1. **PDF** hochladen (mehrseitig, gescannt oder Bild-PDF).  
-2. **Excel** hochladen mit Spalten `Name` und Wert-Spalte (z. B. `Abteilung`).  
-3. OCR nur im fixen ROI `(left=99, top=426, right=280, bottom=488)` (300 DPI).  
-4. Wert in die PDF schreiben **und** gefundene Namen auflisten.  
-5. Annotierte PDF herunterladen.
+### Workflow
+1. PDF + Excel hochladen  
+2. **Liste der Namen aus Excel wird angezeigt**  
+3. Parameter anpassen (Spalten, Textposition, Groß/Klein)  
+4. **Starten** → OCR in fixem ROI `(99, 426, 280, 488)`  
+5. Gefundene Namen & annotierte PDF herunterladen
 
 ### Fester OCR-Bereich
 ```python
@@ -41,9 +36,6 @@ tesseract-ocr-deu  # optional: deutsches Sprachpaket
 
 from __future__ import annotations
 
-# -----------------------------------------------------------------------------
-# Imports
-# -----------------------------------------------------------------------------
 import io
 import re
 from typing import Dict, Set, Tuple
@@ -55,12 +47,12 @@ import streamlit as st
 from PIL import Image
 
 # -----------------------------------------------------------------------------
-# Feste ROI-Koordinaten (Pixel bezogen auf 300 DPI-Renderebene)
+# Fester ROI (Pixel @300 DPI)
 # -----------------------------------------------------------------------------
-ROI: Tuple[int, int, int, int] = (99, 426, 280, 488)  # (left, top, right, bottom)
+ROI: Tuple[int, int, int, int] = (99, 426, 280, 488)
 
 # -----------------------------------------------------------------------------
-# Streamlit UI
+# UI-Setup
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="PDF-Namenssuche (Fixe ROI)", layout="centered")
 
@@ -71,12 +63,11 @@ with st.expander("Anleitung", expanded=False):
         f"""
         1. **PDF hochladen** – mehrseitig, gescannt oder als Bild-PDF.
         2. **Excel hochladen** mit Spalten *Name* und Wert (z. B. *Abteilung*).
-        3. Das Script durchsucht **nur** den Bereich
-           `x = {ROI[0]}:{ROI[2]}`, `y = {ROI[1]}:{ROI[3]}` (Pixel in 300 DPI)
-           jeder Seite nach den Namen.
-        4. Wird ein Name gefunden, wird der Wert auf die Seite geschrieben.
-        5. Anschließend zeigt die App eine Liste **aller gefundenen Namen** und stellt
-           die annotierte PDF zum Download bereit.
+        3. Die App zeigt sofort **alle Namen** aus der gewählten Spalte an.
+        4. Klick **Starten**, um nur den Bereich `x={ROI[0]}:{ROI[2]}, y={ROI[1]}:{ROI[3]}`
+           (Pixel in 300 DPI) jeder Seite per OCR zu durchsuchen.
+        5. Treffer werden in die PDF geschrieben, die annotierte Datei steht
+           anschließend zum Download bereit.
         """
     )
 
@@ -98,7 +89,7 @@ if pdf_file and excel_file:
         st.warning("Die Excel-Datei enthält keine Daten.")
         st.stop()
 
-    st.subheader("Parameter wählen")
+    st.subheader("1️⃣ Spalten & Parameter wählen")
     col1, col2 = st.columns(2)
     with col1:
         name_col = st.selectbox("Spalte mit Namen", df.columns)
@@ -109,20 +100,30 @@ if pdf_file and excel_file:
             index=min(1, len(df.columns) - 1),
         )
 
+    # ------------------------ Vorschau der Namen -----------------------------
+    names_preview = df[name_col].dropna().unique()
+    st.subheader("2️⃣ Namen in der Excel-Datei")
+    if names_preview.size:
+        st.write(f"Es werden **{len(names_preview)}** Namen gesucht:")
+        st.table(pd.DataFrame(sorted(names_preview), columns=["Name"]))
+    else:
+        st.error("In der gewählten Spalte wurden keine Namen gefunden.")
+        st.stop()
+
+    # ---------------------- weitere Parameter -------------------------------
     x_position = st.number_input("X-Position (Pt)", 0, 600, value=50)
     y_position = st.number_input("Y-Position (Pt)", 0, 800, value=50)
     font_size = st.number_input("Schriftgröße (Pt)", 6, 48, value=12)
-
     case_sensitive = st.checkbox("Groß-/Kleinschreibung beachten", value=False)
 
-    # Mapping für Suche → (Originalname, Wert)
+    # Mapping Suche → Originalname + Wert
     search_to_original: Dict[str, str] = {}
     name_map: Dict[str, str] = {}
     for _, r in df.iterrows():
         if pd.notna(r[name_col]):
             original = str(r[name_col])
             key = original if case_sensitive else original.lower()
-            search_to_original[key] = original  # für Anzeige
+            search_to_original[key] = original
             name_map[key] = r[value_col]
 
     if st.button("🚀 Starten"):
@@ -136,26 +137,17 @@ if pdf_file and excel_file:
 
             found_names: Set[str] = set()
 
-            # Durch jede Seite iterieren
-            for page_idx in range(len(doc)):
-                page = doc[page_idx]
-
-                # Seite als 300 DPI-Bild
+            for page in doc:
+                # 300 DPI-Bild
                 pix = page.get_pixmap(dpi=300)
-                page_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                crop = img.crop(ROI)
 
-                # ROI ausschneiden
-                crop_img = page_img.crop(ROI)
-
-                # OCR im ROI
-                ocr_text = pytesseract.image_to_string(crop_img, lang="deu")
+                ocr_text = pytesseract.image_to_string(crop, lang="deu")
                 search_space = ocr_text if case_sensitive else ocr_text.lower()
 
-                # Namen suchen
-                for search_key, value in name_map.items():
-                    pattern = rf"\b{re.escape(search_key)}\b"
-                    if re.search(pattern, search_space):
-                        # Wert einfügen
+                for key, value in name_map.items():
+                    if re.search(rf"\b{re.escape(key)}\b", search_space):
                         page.insert_text(
                             (x_position, y_position),
                             str(value),
@@ -163,29 +155,21 @@ if pdf_file and excel_file:
                             fontname="helv",
                             fill=(0, 0, 0),
                         )
-                        found_names.add(search_to_original[search_key])
-                        break  # nur erster Treffer pro Seite
+                        found_names.add(search_to_original[key])
+                        break
 
-            # Annotierte PDF speichern
-            output_buffer = io.BytesIO()
-            doc.save(output_buffer)
+            buf = io.BytesIO()
+            doc.save(buf)
             doc.close()
-            output_buffer.seek(0)
+            buf.seek(0)
 
         st.success("Fertig! Die PDF ist annotiert.")
-        st.download_button(
-            label="📥 Annotierte PDF herunterladen",
-            data=output_buffer,
-            file_name="annotiert.pdf",
-            mime="application/pdf",
-        )
+        st.download_button("📥 Annotierte PDF herunterladen", buf, file_name="annotiert.pdf", mime="application/pdf")
 
-        # ------------------------- Trefferliste ------------------------------
-        st.subheader("Gefundene Namen")
+        st.subheader("Gefundene Namen im PDF")
         if found_names:
-            st.table(sorted(found_names))  # einfache Tabelle
+            st.table(pd.DataFrame(sorted(found_names), columns=["Name"]))
         else:
-            st.info("Es wurden keine Namen gefunden.")
-
+            st.info("Es wurden keine Namen im PDF gefunden.")
 else:
-    st.info("Bitte PDF und Excel hochladen, um zu starten.")
+    st.info("Bitte PDF **und** Excel hochladen, um zu starten.")
