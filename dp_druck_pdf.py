@@ -221,34 +221,9 @@ if not pdf_file:
 pdf_bytes = pdf_file.read()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# ROI interaktiv festlegen + visuell anzeigen
+# ROI-Koordinaten festlegen
 # ──────────────────────────────────────────────────────────────────────────────
-st.markdown("### 🔍 OCR-Bereich (ROI) festlegen")
-
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    left = st.number_input("↔️ Links (x)", min_value=0, max_value=2000, value=50)
-with col2:
-    top = st.number_input("↕️ Oben (y)", min_value=0, max_value=2000, value=620)
-with col3:
-    right = st.number_input("↔️ Rechts (x)", min_value=0, max_value=2000, value=370)
-with col4:
-    bottom = st.number_input("↕️ Unten (y)", min_value=0, max_value=2000, value=710)
-
-roi_box = (left, top, right, bottom)
-
-# Seite 1 als Bild rendern und ROI einzeichnen
-doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-page = doc.load_page(0)
-pix = page.get_pixmap(dpi=300)
-img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-draw = ImageDraw.Draw(img)
-draw.rectangle(roi_box, outline="red", width=3)
-
-st.image(img, caption="🔴 Roter Rahmen = OCR-Bereich auf Seite 1", use_container_width=True)
-
-
+roi_box = (190, 970, 640, 1090)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Verteilungs‑Datum (vom Nutzer bestimmen lassen)
