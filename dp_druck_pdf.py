@@ -208,7 +208,7 @@ pdf_bytes = pdf_file.read()
 verteil_date = st.date_input("Verteilungsdatum:", value=date.today())
 
 # Feste ROI-Werte (können bei Bedarf angepasst werden)
-x1, y1, x2, y2 = 200, 890, 560, 980
+x1, y1, x2, y2 = 50, 890, 400, 980
 
 if st.button("OCR & PDF beschriften", type="primary"):
     if not excel_file:
