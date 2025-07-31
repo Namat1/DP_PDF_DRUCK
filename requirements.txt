@@ -1,8 +1,7 @@
 streamlit
 streamlit-drawable-canvas
+pymupdf  # fitz
 pandas
-pdf2image
 pillow
 pytesseract
-pymupdf  
 openpyxl
