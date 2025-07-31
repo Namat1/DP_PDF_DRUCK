@@ -33,6 +33,7 @@ pillow
 
 ### packages.txt (Streamlit Cloud)
 ```
+poppler-utils
 tesseract-ocr
 tesseract-ocr-deu  # OCR-Sprache DE
 ```
@@ -50,6 +51,22 @@ import pandas as pd
 import pytesseract
 import streamlit as st
 from PIL import Image
+
+import shutil  # NEW
+
+# -----------------------------------------------------------------------------
+# Tesseract-Pfad ermitteln (Streamlit Cloud)
+# -----------------------------------------------------------------------------
+TESSERACT_CMD = shutil.which("tesseract")
+if TESSERACT_CMD:
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+else:
+    st.error(
+        "Tesseract-Executable nicht gefunden. "
+        "Bitte `packages.txt` mit `tesseract-ocr` (und optional `tesseract-ocr-deu`) "
+        "anlegen und die App neu deployen."
+    )
+    st.stop()
 
 # -----------------------------------------------------------------------------
 # Fester ROI (Pixel @300 DPI)
@@ -96,8 +113,10 @@ if pdf_file:
                 text = pytesseract.image_to_string(crop, lang="deu")
                 data.append((idx, text.strip()))
 
-                # Namen-Kandidaten: Wörter ab 2 Buchstaben, A-Z und ÄÖÜ, kein Ziffern
-                candidates = re.findall(r"\b[\p{Lu}ÄÖÜ][\p{L}]{1,}\b", text, flags=re.UNICODE)
+                # Namen-Kandidaten: Wörter ab 2 Buchstaben, Großschreibung am Anfang
+                # Python-`re` unterstützt keine Unicode-Property-Escapes (\p{{Lu}}),
+                # daher explizite Zeichenklasse für DE + A–Z.
+                candidates = re.findall(r"\b[ÄÖÜA-Z][ÄÖÜA-Za-zäöüß]{1,}\b", text)
                 names_candidates.update(candidates)
 
             df = pd.DataFrame(data, columns=["Seite", "Text (ROI)"])
