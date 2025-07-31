@@ -87,7 +87,6 @@ def extract_entries(row: pd.Series) -> List[dict]:
     datum_lang = f"{weekday}, {datum.strftime('%d.%m.%Y')}"
 
     tour = row[15] if len(row) > 15 else ""
-    # KORRIGIERT: Uhrzeit aus Spalte I (Index 8) auslesen
     uhrzeit = format_time(row[8]) if len(row) > 8 else ""
     lkw = row[11] if len(row) > 11 else ""
 
@@ -179,13 +178,12 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, annotations: List[Optional[Dict[st
             weekday = annotation.get("weekday", "")
             uhrzeit = annotation.get("time", "")
             
-            # Text für die Beschriftung robust zusammenbauen
-            parts = ["Tour"]
-            if weekday:
-                parts.append(weekday)
+            # Text für die Beschriftung im neuen Format zusammenbauen
+            parts = []
             if tour:
                 parts.append(tour)
-            # KORRIGIERT: Uhrzeit nur hinzufügen, wenn sie existiert
+            if weekday:
+                parts.append(weekday)
             if uhrzeit:
                 parts.append(f"{uhrzeit} Uhr")
             
@@ -193,12 +191,12 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, annotations: List[Optional[Dict[st
             
             # Tour-Nr. unten rechts einfügen
             rect = page.rect
-            text_rect = fitz.Rect(rect.width - 700, rect.height - 60, rect.width - 20, rect.height - 10)
+            text_rect = fitz.Rect(rect.width - 550, rect.height - 41, rect.width - 20, rect.height - 1)
             
             page.insert_textbox(
                 text_rect,
                 text_to_insert,
-                fontsize=11,
+                fontsize=12,
                 fontname="hebo",
                 color=(1, 0, 0),  # Rot
                 align=fitz.TEXT_ALIGN_RIGHT
@@ -308,4 +306,4 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
 # Footer
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher v1.5 – Spalte I für Uhrzeit*")
+st.markdown("*PDF Dienstplan Matcher v1.6 – Format der Beschriftung angepasst*")
