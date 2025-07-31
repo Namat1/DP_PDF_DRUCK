@@ -189,7 +189,7 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, annotations: List[Optional[Dict[st
                 text_rect,
                 text_to_insert,
                 fontsize=12,
-                fontname="helv-bold",
+                fontname="hebo",  # KORRIGIERT: "helv-bold" zu "hebo" geändert
                 color=(1, 0, 0),  # Rot
                 align=fitz.TEXT_ALIGN_RIGHT
             )
@@ -277,4 +277,4 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
 # Footer
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher v1.2 – Erweiterte Tour-Beschriftung*")
+st.markdown("*PDF Dienstplan Matcher v1.3 – Fehlerbehebung Schriftart*")
