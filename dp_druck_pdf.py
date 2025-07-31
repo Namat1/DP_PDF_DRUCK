@@ -1,36 +1,5 @@
 from __future__ import annotations
 
-"""
-Streamlit Utility – PDF‑Dienstplan Matcher
-=========================================
-End‑to‑End‑Workflow
-------------------
-1. **Dateien hochladen** – PDF (gescannter Dienstplan) **und** die zugehörige Excel‑Tabelle.
-2. **ROI festlegen** – Rechteck, in dem auf jeder PDF‑Seite der Fahrername steht.
-3. **OCR** – Namen pro Seite auslesen & zwischenspeichern.
-4. **Excel parsen** – Fahrer + Datum + Tour‑Nr. extrahieren.
-5. **Verteilungs­datum wählen**.
-6. **Match & Annotate** – Namen ↔︎ Excel‑Zeilen verbinden, Tour‑Nr. unten rechts auf jede PDF‑Seite schreiben.
-7. **Download** der annotierten PDF.
-
-### Python‑Pakete (requirements.txt)
-```
-streamlit
-pymupdf        # fitz
-pytesseract
-pandas
-pillow
-openpyxl
-```
-
-### System‑Pakete (packages.txt – Streamlit Cloud)
-```
-poppler-utils
-pytesseract-ocr
-pytesseract-ocr-deu
-```
-"""
-
 import io
 import re
 import shutil
@@ -61,18 +30,7 @@ else:
 # Streamlit‑Basics
 # ──────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="PDF Dienstplan Matcher", layout="wide")
-st.title("📄 Dienstpläne beschriften & verteilen")
-
-with st.expander("Kurze Anleitung", expanded=False):
-    st.markdown(
-        """
-        **Workflow**
-        1. PDF & Excel hochladen.
-        2. ROI auf Seite 1 definieren → Vorschau prüfen.
-        3. Verteilungs‑Datum auswählen.
-        4. *OCR & Annotate* starten → fertige PDF herunterladen.
-        """
-    )
+st.title("📄 PDF Dienstplan Matcher")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Hilfsfunktionen
@@ -247,78 +205,38 @@ if not pdf_file:
 
 pdf_bytes = pdf_file.read()
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Seite 1 rendern & ROI auswählen
-# ──────────────────────────────────────────────────────────────────────────────
-@lru_cache(maxsize=2)
-def render_page1(pdf: bytes, dpi: int = 300):
-    doc = fitz.open(stream=pdf, filetype="pdf")
-    page = doc.load_page(0)
-    pix = page.get_pixmap(dpi=dpi)
-    pil_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    return pil_img, pix.width, pix.height
+st.subheader("ROI definieren")
+x1 = st.number_input("x1 (links)", 0, 2000, value=200)
+y1 = st.number_input("y1 (oben)", 0, 3000, value=890)
+x2 = st.number_input("x2 (rechts)", x1 + 1, 2000, value=560)
+y2 = st.number_input("y2 (unten)", y1 + 1, 3000, value=980)
 
-page1_img, W, H = render_page1(pdf_bytes)
+verteil_date = st.date_input("Verteilungsdatum:", value=date.today())
 
-st.subheader("1️⃣ ROI definieren")
-colA, colB = st.columns([1, 2])
-
-with colA:
-    st.write("**Seite 1 Größe:**", f"{W} × {H} px")
-    x1 = st.number_input("x1 (links)", 0, W - 1, value=st.session_state.get("x1", 200))
-    y1 = st.number_input("y1 (oben)", 0, H - 1, value=st.session_state.get("y1", 890))
-    x2 = st.number_input("x2 (rechts)", x1 + 1, W, value=st.session_state.get("x2", 560))
-    y2 = st.number_input("y2 (unten)", y1 + 1, H, value=st.session_state.get("y2", 980))
-    st.session_state.update({"x1": x1, "y1": y1, "x2": x2, "y2": y2})
-
-with colB:
-    roi_box = (x1, y1, x2, y2)
-    overlay = page1_img.copy()
-    ImageDraw.Draw(overlay).rectangle(roi_box, outline="red", width=5)
-    st.image(overlay, caption="Seite 1 mit ROI", use_column_width=True)
-    st.image(page1_img.crop(roi_box), caption="ROI‑Vorschau", use_column_width=True)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Verteilungs‑Datum (vom Nutzer bestimmen lassen)
-# ──────────────────────────────────────────────────────────────────────────────
-verteil_date: date = st.date_input(
-    "📅 Dienstpläne verteilen am:", value=date.today(), format="DD.MM.YYYY"
-)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Haupt‑Button – OCR, Excel, Match & Annotate
-# ──────────────────────────────────────────────────────────────────────────────
-if st.button("🚀 OCR & PDF beschriften", type="primary"):
+if st.button("OCR & PDF beschriften", type="primary"):
     if not excel_file:
-        st.error("⚠️ Bitte auch die Excel‑Datei hochladen!")
+        st.error("Bitte auch die Excel‑Datei hochladen!")
         st.stop()
     
-    with st.spinner("🔍 OCR läuft..."):
-        # OCR für alle Seiten
+    roi_box = (x1, y1, x2, y2)
+    
+    with st.spinner("OCR läuft..."):
         ocr_names = ocr_names_from_roi(pdf_bytes, roi_box)
-        st.success(f"✅ OCR abgeschlossen: {len(ocr_names)} Seiten verarbeitet")
+        st.success(f"OCR abgeschlossen: {len(ocr_names)} Seiten verarbeitet")
     
-    with st.spinner("📊 Excel wird geparst..."):
-        # Excel-Daten laden
+    with st.spinner("Excel wird geparst..."):
         excel_data = parse_excel_data(excel_file)
-        st.success(f"✅ Excel geparst: {len(excel_data)} Einträge gefunden")
+        st.success(f"Excel geparst: {len(excel_data)} Einträge gefunden")
     
-    # Verteilungsdatum zu datetime konvertieren
     verteil_datetime = datetime.combine(verteil_date, datetime.min.time())
-    
-    # Nur Einträge für das Verteilungsdatum filtern
     filtered_data = excel_data[excel_data['Datum_raw'].dt.date == verteil_date]
     
     if filtered_data.empty:
-        st.warning(f"⚠️ Keine Einträge für {verteil_date.strftime('%d.%m.%Y')} gefunden!")
-        st.subheader("Verfügbare Daten in Excel:")
+        st.warning(f"Keine Einträge für {verteil_date.strftime('%d.%m.%Y')} gefunden!")
         if not excel_data.empty:
             available_dates = excel_data['Datum_raw'].dt.date.unique()
-            st.write("Gefundene Datumsangaben:", sorted(available_dates))
+            st.write("Verfügbare Datumsangaben:", sorted(available_dates))
     else:
-        st.subheader("2️⃣ Matching-Ergebnisse")
-        
-        # Namen matching
         excel_names = filtered_data['Name'].unique().tolist()
         tours = []
         
@@ -326,54 +244,28 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
             matched_name = fuzzy_match_name(ocr_name, excel_names)
             
             if matched_name:
-                # Tour für gematchten Namen finden
                 match_entry = filtered_data[filtered_data['Name'] == matched_name].iloc[0]
                 tour = match_entry['Tour']
                 tours.append(str(tour))
             else:
                 tours.append("")
         
-        # Ergebnisse anzeigen
-        results_df = pd.DataFrame({
-            'Seite': range(1, len(ocr_names) + 1),
-            'OCR Name': ocr_names,
-            'Matched Name': [fuzzy_match_name(name, excel_names) for name in ocr_names],
-            'Tour': tours
-        })
-        
-        st.dataframe(results_df, use_container_width=True)
-        
-        # Statistiken
         matched_count = sum(1 for tour in tours if tour)
-        st.metric("Erfolgreich gematcht", f"{matched_count}/{len(tours)}")
+        st.write(f"Erfolgreich gematcht: {matched_count}/{len(tours)}")
         
         if matched_count > 0:
-            with st.spinner("📝 PDF wird annotiert..."):
-                # PDF annotieren
+            with st.spinner("PDF wird annotiert..."):
                 annotated_pdf = annotate_pdf_with_tours(pdf_bytes, ocr_names, tours)
                 
-                # Download-Button
                 st.download_button(
-                    label="📥 Annotierte PDF herunterladen",
+                    label="Annotierte PDF herunterladen",
                     data=annotated_pdf,
                     file_name=f"dienstplan_annotiert_{verteil_date.strftime('%Y%m%d')}.pdf",
                     mime="application/pdf",
                     type="primary"
                 )
                 
-                st.success("✅ PDF erfolgreich annotiert!")
-        
-        # Debug-Informationen
-        with st.expander("🔍 Debug-Informationen"):
-            st.write("**Gefilterte Excel-Daten:**")
-            st.dataframe(filtered_data)
-            
-            st.write("**OCR-Namen (roh):**")
-            for i, name in enumerate(ocr_names):
-                st.write(f"Seite {i+1}: '{name}'")
+                st.success("PDF erfolgreich annotiert!")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Footer
-# ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher v1.0 – Automatische Tour-Zuordnung*")
+st.markdown("*PDF Dienstplan Matcher*")
