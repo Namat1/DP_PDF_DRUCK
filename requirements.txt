@@ -1,4 +1,6 @@
- streamlit
-  streamlit-drawable-canvas
-  pymupdf  # fitz
-  pillow
+streamlit
+pymupdf  # fitz
+pandas
+pytesseract
+pillow
+openpyxl
