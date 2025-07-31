@@ -26,7 +26,8 @@ else:
 # ────────────────────────────────────────────────────────────────
 # Streamlit‑Grundlayout (ohne Zusatz‑Markdown)
 # ────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Dienstplan", layout="wide")
+st.set_page_config(page_title="Touren zur Dienstplanverteilung", layout="wide")
+
 
 # ────────────────────────────────────────────────────────────────
 # Dateiupload
