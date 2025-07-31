@@ -1,8 +1,4 @@
-Absolut. Hier ist der vollständige und bereinigte Python-Code für Ihre Streamlit-Anwendung, der alle vorherigen Anpassungen enthält.
 
-Nach dem Klick auf den Button "OCR & PDF beschriften" werden alle Zwischenergebnisse (wie die ROI-Vorschau oder die CSV-Anzeige) übersprungen und es erscheint direkt der finale Download-Button für das beschriftete PDF.
-
-```python
 from __future__ import annotations
 
 import io
@@ -311,5 +307,3 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown("*PDF Dienstplan Matcher v1.0 – Automatische Tour-Zuordnung*")
-
-```
