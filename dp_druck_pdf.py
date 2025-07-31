@@ -87,7 +87,8 @@ def extract_entries(row: pd.Series) -> List[dict]:
     datum_lang = f"{weekday}, {datum.strftime('%d.%m.%Y')}"
 
     tour = row[15] if len(row) > 15 else ""
-    uhrzeit = format_time(row[16]) if len(row) > 16 else ""
+    # KORRIGIERT: Uhrzeit aus Spalte I (Index 8) auslesen
+    uhrzeit = format_time(row[8]) if len(row) > 8 else ""
     lkw = row[11] if len(row) > 11 else ""
 
     base_entry = {
@@ -178,8 +179,17 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, annotations: List[Optional[Dict[st
             weekday = annotation.get("weekday", "")
             uhrzeit = annotation.get("time", "")
             
-            # Text für die Beschriftung zusammenbauen
-            text_to_insert = f"Tour {weekday} - {tour} - {uhrzeit} Uhr"
+            # Text für die Beschriftung robust zusammenbauen
+            parts = ["Tour"]
+            if weekday:
+                parts.append(weekday)
+            if tour:
+                parts.append(tour)
+            # KORRIGIERT: Uhrzeit nur hinzufügen, wenn sie existiert
+            if uhrzeit:
+                parts.append(f"{uhrzeit} Uhr")
+            
+            text_to_insert = " - ".join(parts)
             
             # Tour-Nr. unten rechts einfügen
             rect = page.rect
@@ -189,7 +199,7 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, annotations: List[Optional[Dict[st
                 text_rect,
                 text_to_insert,
                 fontsize=12,
-                fontname="hebo",  # KORRIGIERT: "helv-bold" zu "hebo" geändert
+                fontname="hebo",
                 color=(1, 0, 0),  # Rot
                 align=fitz.TEXT_ALIGN_RIGHT
             )
@@ -248,6 +258,7 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
             if matched_name:
                 match_entry = filtered_data[filtered_data['Name'] == matched_name].iloc[0]
                 annotation_info = {
+                    "matched_name": matched_name,
                     "tour": str(match_entry['Tour']),
                     "weekday": str(match_entry['Wochentag']),
                     "time": str(match_entry['Uhrzeit'])
@@ -255,6 +266,26 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
                 page_annotations.append(annotation_info)
             else:
                 page_annotations.append(None)
+        
+        # --- NEU: Diagnose-Tabelle erstellen und anzeigen ---
+        st.markdown("---")
+        st.subheader("🔍 Ergebnis der Zuordnung")
+        
+        display_data = []
+        for i, (ocr_name, annotation) in enumerate(zip(ocr_names, page_annotations)):
+            row_data = {
+                "PDF Seite": i + 1,
+                "Gefundener Name (OCR)": ocr_name or "N/A",
+                "Zugeordnet (Excel)": annotation.get("matched_name", "❌ Nein") if annotation else "❌ Nein",
+                "Tour": annotation.get("tour", "") if annotation else "",
+                "Wochentag": annotation.get("weekday", "") if annotation else "",
+                "Uhrzeit": annotation.get("time", "") if annotation else ""
+            }
+            display_data.append(row_data)
+        
+        st.dataframe(pd.DataFrame(display_data), use_container_width=True)
+        st.info("Bitte überprüfen Sie die Zuordnung. Nur für Seiten mit einem zugeordneten Namen wird eine Beschriftung erzeugt.")
+        st.markdown("---")
         
         matched_count = sum(1 for anno in page_annotations if anno)
         
@@ -277,4 +308,4 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
 # Footer
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher v1.3 – Fehlerbehebung Schriftart*")
+st.markdown("*PDF Dienstplan Matcher v1.5 – Spalte I für Uhrzeit*")
