@@ -1,57 +1,83 @@
 from __future__ import annotations
 
 """
-Clean Streamlit Utility – PDF-Dienstplan Matcher
-================================================
-Minimal-UI-Workflow
-------------------
-1. PDF & Excel hochladen
-2. ROI festlegen
-3. Verteilungs­datum wählen
-4. OCR → Tour-Nr. unten rechts annotieren
-5. Fertige PDF herunterladen
+Streamlit Utility – Interaktiver PDF‑ROI‑Finder & Excel‑Extraktor
+===============================================================
+### Funktionen
+1. **ROI visual bestimmen**: PDF‑Upload → Seite 1 wird mit 300 DPI gerendert. Über vier Zahl‑Inputs legst du die Koordinaten fest.
+2. **Live‑OCR & Vorschau**: Ausgeschnittener Bereich + sofortiges OCR‑Ergebnis.
+3. **OCR auf alle Seiten**: Wenn das Rechteck passt, wird dasselbe ROI für jede Seite verwendet; Texte & erkannte (groß geschriebene) Wörter werden geloggt.
+4. **Excel‑Einträge auslesen**: Gleichzeitig kannst du eine Excel‑Datei hochladen. Die Funktion `extract_entries_both_sides` liest pro Zeile bis zu zwei Fahrernamen samt Datum/KW/Tour/LKW aus und erzeugt eine tabellarische Übersicht.
+
+*Hinweis*: Für einen ersten Test reicht die mitgelieferte Beispiel‑Excel.
+
+### requirements.txt
+```
+streamlit
+pymupdf  # fitz
+pytesseract
+pandas
+pillow
+openpyxl
+```
+
+### packages.txt (nur für Streamlit Cloud)
+```
+poppler-utils
+tesseract-ocr
+tesseract-ocr-deu
+```
 """
 
 import io
+import locale
 import re
 import shutil
-import warnings
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import List, Tuple
 
-import fitz  # PyMuPDF
+import fitz  # PyMuPDF
 import pandas as pd
 import pytesseract
 import streamlit as st
 from PIL import Image, ImageDraw
 
-# ────────────────────────────────────────────────────────────────
-# Suppress noisy library warnings
-# ────────────────────────────────────────────────────────────────
-warnings.filterwarnings(
-    "ignore", category=UserWarning, module="openpyxl.worksheet.header_footer"
-)
-
-# ────────────────────────────────────────────────────────────────
-# Tesseract path (needed on Streamlit Cloud)
-# ────────────────────────────────────────────────────────────────
-TESS_CMD = shutil.which("tesseract")
-if TESS_CMD:
-    pytesseract.pytesseract.tesseract_cmd = TESS_CMD
+# ──────────────────────────────────────────────────────────────────────────────
+# Tesseract – Pfad fixieren (wichtig für Streamlit Cloud)
+# ──────────────────────────────────────────────────────────────────────────────
+TESSERACT_CMD = shutil.which("tesseract")
+if TESSERACT_CMD:
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 else:
-    st.error("Tesseract-Executable nicht gefunden. Bitte installieren.")
+    st.error(
+        "Tesseract‑Executable nicht gefunden. Bitte in **packages.txt** `tesseract-ocr` "
+        "und optional `tesseract-ocr-deu` eintragen und App neu starten."
+    )
     st.stop()
 
-# ────────────────────────────────────────────────────────────────
-# Streamlit basic layout (minimal – no verbose markdown)
-# ────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="PDF Dienstplan Matcher", layout="wide")
+# ──────────────────────────────────────────────────────────────────────────────
+# Seiteneinstellungen & UI‑Titel
+# ──────────────────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="PDF‑ROI & Excel‑Extraktor", layout="wide")
+st.title("📄 PDF‑ROI bestimmen & Excel‑Einträge extrahieren")
 
-# ────────────────────────────────────────────────────────────────
-# Helper dictionaries & functions
-# ────────────────────────────────────────────────────────────────
-WEEKDAYS_DE = {
+with st.expander("Kurzanleitung", expanded=False):
+    st.markdown(
+        """
+        1. **PDF hochladen** und ROI setzen.
+        2. **Excel hochladen** (optional) – wird automatisch eingelesen.
+        3. Prüfe Vorschau‑OCR und Excel‑Tabelle.
+        4. Wenn alles passt ➜ *OCR auf alle Seiten*.
+        """
+    )
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Excel‑Hilfsfunktionen
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Deutschsprachige Wochentags‑Mapping
+wochentage_deutsch = {
     "Monday": "Montag",
     "Tuesday": "Dienstag",
     "Wednesday": "Mittwoch",
@@ -61,214 +87,179 @@ WEEKDAYS_DE = {
     "Sunday": "Sonntag",
 }
 
-def kw_year_sunday(d: datetime) -> Tuple[int, int]:
-    """KW-Berechnung mit Sonntag als Wochen­start (ISO + 1 Tag)."""
-    s = d + timedelta(days=1)
-    return int(s.strftime("%V")), int(s.strftime("%G"))
+# "KW"‑Berechnung: Kalenderwoche mit **Sonntag** als erstem Tag
 
-NAME_PATTERN = re.compile(r"([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)\s+([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)")
+def get_kw_and_year_sunday_start(datum: datetime) -> Tuple[int, int]:
+    # Python ISO KW (Montag‑Start) → wir verschieben um einen Tag
+    sonntag_basiert = datum + timedelta(days=1)
+    kw = int(sonntag_basiert.strftime("%V"))  # ISO KW aus Datum +1 Tag
+    jahr = int(sonntag_basiert.strftime("%G"))
+    return kw, jahr
 
-# --- Namens­normalisierung / Vergleich ---------------------------------------
 
-def _normalize_name(n: str) -> str:
-    """Kleinschreibung, Mehrfach-Spaces → eine, deutsche Umlaute → ASCII."""
-    n = n.lower()
-    n = (
-        n.replace("ä", "ae")
-        .replace("ö", "oe")
-        .replace("ü", "ue")
-        .replace("ß", "ss")
-    )
-    n = re.sub(r"\s+", " ", n).strip()
-    return n
+def extract_entries_both_sides(row: pd.Series) -> List[dict]:
+    """Fasst pro Excel‑Zeile bis zu zwei Fahrer‑Einträge zusammen.
 
-def names_match(a: str, b: str) -> bool:
-    """Strenger Vergleich: erst voll, dann nur Nachname (robust gegen OCR-Fehler)."""
-    na, nb = _normalize_name(a), _normalize_name(b)
-    if na == nb:
-        return True
-    # Nachname (= letztes Token) vergleichen
-    return na.split()[-1] == nb.split()[-1]
+    Erwartete Spalten (0‑Index):
+    - O (14): Datum
+    - D/E (3,4): Fahrer 1 Vor‑ & Nachname
+    - G/H (6,7): Fahrer 2 Vor‑ & Nachname
+    - L (11): LKW
+    - P (15): Tour
+    - Q (16): Uhrzeit (optional)
+    """
+    eintraege: List[dict] = []
 
-# --- Excel-Extraktion ---------------------------------------------------------
-
-def extract_entries(row: pd.Series) -> List[dict]:
-    """Extrahiert bis zu zwei Fahrer + Tour etc. aus einer Excel-Zeile."""
-    out: List[dict] = []
-    datum = pd.to_datetime(row[14], errors="coerce")  # Spalte O (Index 14)
+    # Datum parsen/validieren
+    datum = pd.to_datetime(row[14], errors="coerce")
     if pd.isna(datum):
-        return out
+        return eintraege
 
-    kw, year = kw_year_sunday(datum)
-    datum_fmt = datum.strftime("%d.%m.%Y")
-    weekday = WEEKDAYS_DE.get(datum.day_name(), datum.day_name())
-    datum_lang = f"{weekday}, {datum_fmt}"
+    kw, jahr = get_kw_and_year_sunday_start(datum)
+    wochentag_en = datum.day_name()
+    wochentag_de = wochentage_deutsch.get(wochentag_en, wochentag_en)
+    datum_formatiert = datum.strftime("%d.%m.%Y")
+    datum_komplett = f"{wochentag_de}, {datum_formatiert}"
 
     tour = row[15] if len(row) > 15 else ""
     uhrzeit = row[16] if len(row) > 16 else ""
     lkw = row[11] if len(row) > 11 else ""
 
-    def add(name: str):
-        if name:
-            out.append(
-                {
-                    "KW": kw,
-                    "Jahr": year,
-                    "Datum": datum_lang,
-                    "Datum_raw": datum,
-                    "Name": name,
-                    "Tour": tour,
-                    "Uhrzeit": uhrzeit,
-                    "LKW": lkw,
-                }
-            )
-
+    # Fahrer 1
     if pd.notna(row[3]) and pd.notna(row[4]):
-        add(f"{str(row[3]).strip()} {str(row[4]).strip()}")
-    if pd.notna(row[6]) and pd.notna(row[7]):
-        add(f"{str(row[6]).strip()} {str(row[7]).strip()}")
-
-    return out
-
-# ────────────────────────────────────────────────────────────────
-# File uploads
-# ────────────────────────────────────────────────────────────────
-pdf_file = st.file_uploader("📑 PDF", type=["pdf"], key="pdf")
-excel_file = st.file_uploader("📊 Excel", type=["xlsx", "xlsm"], key="excel")
-
-if not pdf_file:
-    st.stop()
-
-pdf_bytes = pdf_file.read()
-
-# ────────────────────────────────────────────────────────────────
-# Render first page & ROI selector
-# ────────────────────────────────────────────────────────────────
-@lru_cache(maxsize=2)
-def render_page1(pdf: bytes, dpi: int = 300):
-    d = fitz.open(stream=pdf, filetype="pdf")
-    p = d.load_page(0)
-    pix = p.get_pixmap(dpi=dpi)
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    return img, pix.width, pix.height
-
-page1, W, H = render_page1(pdf_bytes)
-
-st.subheader("ROI wählen")
-
-colA, colB = st.columns([1, 2])
-
-with colA:
-    x1 = st.number_input("x1", 0, W - 1, value=200)
-    y1 = st.number_input("y1", 0, H - 1, value=890)
-    x2 = st.number_input("x2", x1 + 1, W, value=560)
-    y2 = st.number_input("y2", y1 + 1, H, value=980)
-    roi = (x1, y1, x2, y2)
-
-with colB:
-    overlay = page1.copy()
-    ImageDraw.Draw(overlay).rectangle(roi, outline="red", width=4)
-    st.image(overlay, use_container_width=True)
-    st.image(page1.crop(roi), use_container_width=True)
-
-# ────────────────────────────────────────────────────────────────
-# Distribution date
-# ────────────────────────────────────────────────────────────────
-verteil_date: date = st.date_input("Verteilungs­datum", value=date.today())
-
-# Optional Debug-Switch
-DEBUG = st.checkbox("Debug anzeigen", value=False)
-
-# ────────────────────────────────────────────────────────────────
-# Start processing
-# ────────────────────────────────────────────────────────────────
-if st.button("Start", type="primary"):
-    if not excel_file:
-        st.error("Excel fehlt")
-        st.stop()
-
-    with st.spinner("Excel lesen …"):
-        try:
-            xl_df = pd.read_excel(excel_file, engine="openpyxl", header=None)
-        except Exception as exc:
-            st.error(f"Excel-Fehler: {exc}")
-            st.stop()
-
-    excel_entries: List[dict] = []
-    for _, r in xl_df.iterrows():
-        excel_entries.extend(extract_entries(r))
-
-    if not excel_entries:
-        st.warning("Keine relevanten Daten in der Excel gefunden.")
-        st.stop()
-
-    if DEBUG:
-        st.write("Gefundene Einträge im Excel (Auszug):")
-        st.write(pd.DataFrame(excel_entries).head())
-
-    # ── OCR & annotate PDF ───────────────────────────────────────
-    pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    matches = 0
-
-    for i in range(len(pdf_doc)):
-        page = pdf_doc.load_page(i)
-        try:
-            pix = page.get_pixmap(clip=fitz.Rect(*roi))
-        except ValueError:
-            continue  # ROI außerhalb der Seite → überspringen
-
-        if pix.width == 0 or pix.height == 0:
-            continue  # leere ROI
-
-        crop = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        try:
-            text = pytesseract.image_to_string(crop, lang="deu")
-        except Exception:
-            continue  # OCR-Fehler
-
-        m = NAME_PATTERN.search(text)
-        if not m:
-            if DEBUG:
-                st.write(f"Seite {i+1}: Kein Name erkannt → '{text.strip()[:50]}…'")
-            continue
-
-        ocr_name = f"{m.group(1)} {m.group(2)}".strip()
-
-        match = next(
-            (
-                e
-                for e in excel_entries
-                if names_match(e["Name"], ocr_name)
-                and e["Datum_raw"].date() == verteil_date
-            ),
-            None,
+        name = f"{str(row[3]).strip()} {str(row[4]).strip()}"
+        eintraege.append(
+            {
+                "KW": kw,
+                "Jahr": jahr,
+                "Datum": datum_komplett,
+                "Datum_sortierbar": datum,
+                "Name": name,
+                "Tour": tour,
+                "Uhrzeit": uhrzeit,
+                "LKW": lkw,
+            }
         )
-        if not match:
-            if DEBUG:
-                st.write(f"Seite {i+1}: Kein Match für '{ocr_name}'")
-            continue
 
-        tour_raw = str(match["Tour"]).strip()
-        tour_text = re.sub(r"\.0$", "", tour_raw)  # 12.0 → 12
-        if not tour_text:
-            if DEBUG:
-                st.write(f"Seite {i+1}: Leere Tour für '{ocr_name}'")
-            continue
+    # Fahrer 2
+    if pd.notna(row[6]) and pd.notna(row[7]):
+        name = f"{str(row[6]).strip()} {str(row[7]).strip()}"
+        eintraege.append(
+            {
+                "KW": kw,
+                "Jahr": jahr,
+                "Datum": datum_komplett,
+                "Datum_sortierbar": datum,
+                "Name": name,
+                "Tour": tour,
+                "Uhrzeit": uhrzeit,
+                "LKW": lkw,
+            }
+        )
 
-        bbox = page.bound()
-        dest = fitz.Point(bbox.x1 - 50, bbox.y1 - 20)
-        page.insert_text(dest, tour_text, fontsize=9, fontname="helv", fill=(0, 0, 0))
-        matches += 1
+    return eintraege
 
-    if matches == 0:
-        st.warning("Keine Namen-Tour-Treffer gefunden.")
-        st.stop()
+# ──────────────────────────────────────────────────────────────────────────────
+# PDF‑Upload + ROI
+# ──────────────────────────────────────────────────────────────────────────────
+pdf_file = st.file_uploader("📑 PDF hochladen", type=["pdf"], key="pdf")
+excel_file = st.file_uploader("📊 Excel‑Datei hochladen", type=["xlsx", "xlsm"], key="excel")
 
-    out = io.BytesIO()
-    pdf_doc.save(out)
-    st.download_button(
-        "Fertige PDF herunterladen",
-        data=out.getvalue(),
-        file_name="dienstplaene.pdf",
-        mime="application/pdf",
-    )
+if pdf_file:
+    pdf_bytes = pdf_file.read()
+
+    # Render erste Seite → Cache, damit Koordinatenänderung flott ist
+    @lru_cache(maxsize=2)
+    def render_first_page(pdf: bytes, dpi: int = 300):
+        d = fitz.open(stream=pdf, filetype="pdf")
+        p = d.load_page(0)
+        pix = p.get_pixmap(dpi=dpi)
+        pil = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        return pil, pix.width, pix.height
+
+    img, width, height = render_first_page(pdf_bytes)
+
+    st.subheader("1️⃣ ROI wählen (Koordinaten in Pixel)")
+    col_left, col_right = st.columns([1, 2])
+
+    with col_left:
+        st.write("**Bildgröße**:", f"{width} × {height} px")
+        x1 = st.number_input("x1 (links)", 0, width - 1, value=st.session_state.get("x1", 200))
+        y1 = st.number_input("y1 (oben)", 0, height - 1, value=st.session_state.get("y1", 890))
+        x2 = st.number_input("x2 (rechts)", x1 + 1, width, value=st.session_state.get("x2", 560))
+        y2 = st.number_input("y2 (unten)", y1 + 1, height, value=st.session_state.get("y2", 980))
+        st.session_state.update({"x1": x1, "y1": y1, "x2": x2, "y2": y2})
+
+    with col_right:
+        roi = (x1, y1, x2, y2)
+        overlay = img.copy()
+        ImageDraw.Draw(overlay).rectangle(roi, outline="red", width=6)
+        st.image(overlay, caption="Seite 1 mit markiertem ROI", use_column_width=True)
+        crop = img.crop(roi)
+        st.image(crop, caption="ROI‑Vorschau", use_column_width=True)
+        ocr_preview = pytesseract.image_to_string(crop, lang="deu").strip()
+        st.text_area("OCR‑Ergebnis (Seite 1)", ocr_preview, height=120)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Excel‑Einlesen (falls vorhanden)
+    # ──────────────────────────────────────────────────────────────────────────
+    if excel_file:
+        try:
+            df_xl = pd.read_excel(excel_file, engine="openpyxl", header=None)  # ohne Header
+        except Exception as exc:
+            st.error(f"Excel konnte nicht gelesen werden: {exc}")
+            df_xl = pd.DataFrame()
+
+        if not df_xl.empty:
+            st.subheader("2️⃣ Excel‑Vorschau (erste 15 Zeilen)")
+            st.dataframe(df_xl.head(15), use_container_width=True)
+
+            # Einträge extrahieren
+            eintraege: list[dict] = []
+            for _, r in df_xl.iterrows():
+                eintraege.extend(extract_entries_both_sides(r))
+
+            if eintraege:
+                df_entries = pd.DataFrame(eintraege).sort_values("Datum_sortierbar")
+                st.subheader("3️⃣ Extrahierte Einträge")
+                st.dataframe(df_entries.drop(columns=["Datum_sortierbar"]), use_container_width=True)
+
+                # CSV‑Download
+                csv_buf = io.StringIO()
+                df_entries.to_csv(csv_buf, index=False)
+                st.download_button("📥 Einträge als CSV", csv_buf.getvalue(), "excel_eintraege.csv", "text/csv")
+            else:
+                st.info("Keine gültigen Fahrer‑Einträge gefunden.")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Button: OCR auf alle Seiten
+    # ──────────────────────────────────────────────────────────────────────────
+    if st.button("🚀 OCR auf *alle* PDF‑Seiten", type="primary"):
+        with st.spinner("Starte OCR …"):
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            roi_tuple = (x1, y1, x2, y2)
+            data: list[tuple[int, str]] = []
+            name_candidates: set[str] = set()
+
+            for page_idx, page in enumerate(doc, start=1):
+                pix = page.get_pixmap(dpi=300)
+                page_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                txt = pytesseract.image_to_string(page_img.crop(roi_tuple), lang="deu").strip()
+                data.append((page_idx, txt))
+                name_candidates.update(re.findall(r"\b[ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]{1,}\b", txt))
+
+            df_pdf = pd.DataFrame(data, columns=["Seite", "Text (ROI)"])
+
+        st.success("OCR abgeschlossen ✔️")
+        st.dataframe(df_pdf, use_container_width=True)
+        csv = df_pdf.to_csv(index=False)
+        st.download_button("📥 PDF‑OCR‑Tabelle als CSV", csv, "pdf_roi_ocr.csv", "text/csv")
+
+        st.subheader("Potentielle Namen aus dem PDF")
+        if name_candidates:
+            st.write("; ".join(sorted(name_candidates)))
+        else:
+            st.info("Keine großgeschriebenen Wörter gefunden.")
+
+else:
+    st.info("👉 Bitte zuerst ein PDF hochladen (und optional Excel).")
