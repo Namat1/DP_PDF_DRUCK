@@ -3,5 +3,4 @@ pymupdf  # fitz
 pytesseract
 pandas
 pillow
-tesseract-ocr
 
