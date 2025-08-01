@@ -121,16 +121,18 @@ def extract_entries(row: pd.Series) -> List[dict]:
 # OCR‑Regex – zwei **aufeinander­folgende** Großbuchstaben‑Wörter → Vor‑ & Nachname
 NAME_PATTERN = re.compile(r"([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)\s+([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)")
 
-def extract_names_from_text(pdf_bytes: bytes, roi: Tuple[int, int, int, int]) -> List[str]:
-    """Liest Namen direkt als Text aus dem PDF, basierend auf Koordinaten."""
+def extract_names_from_full_page(pdf_bytes: bytes) -> List[str]:
+    """Liest aus jeder Seite den ersten Namen (zwei Wörter mit Großbuchstaben am Anfang)."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     names = []
-    for page in doc:
-        rect = fitz.Rect(*roi)
-        words = page.get_text("words")  # (x0, y0, x1, y1, "text", ...)
-        in_box = [w[4] for w in words if fitz.Rect(w[:4]).intersects(rect)]
-        text = " ".join(in_box).strip()
+    for i, page in enumerate(doc):
+        text = page.get_text()
         matches = NAME_PATTERN.findall(text)
+        
+        # Debug-Ausgabe pro Seite
+        st.markdown(f"**Seite {i+1} – Rohtext:**")
+        st.code(text)
+
         if matches:
             name = f"{matches[0][0]} {matches[0][1]}"
             names.append(name)
@@ -265,7 +267,7 @@ if st.button("🚀 OCR & PDF beschriften", type="primary"):
         st.stop()
     
     with st.spinner("🔍 OCR läuft und Excel wird verarbeitet..."):
-        ocr_names = extract_names_from_text(pdf_bytes, roi_box)
+        ocr_names = extract_names_from_full_page(pdf_bytes)
         excel_data = parse_excel_data(excel_file)
         filtered_data = excel_data[excel_data['Datum_raw'].dt.date == verteil_date]
     
