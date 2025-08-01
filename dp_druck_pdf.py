@@ -1,33 +1,31 @@
 from __future__ import annotations
 
-
-
 import io
 import re
 import shutil
 from datetime import date, datetime, timedelta, time
 from typing import List, Tuple, Dict, Optional
 
-import fitz  # PyMuPDF
+import fitz  # PyMuPDF
 import pandas as pd
 import pytesseract
 import streamlit as st
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Tesseract – Pfad setzen (wichtig für Streamlit Cloud)
-# ──────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# Tesseract – Pfad setzen (wichtig für Streamlit Cloud)
+# ──────────────────────────────────────────────────────────────────────────────
 TESS_CMD = shutil.which("tesseract")
 if TESS_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESS_CMD
 else:
-    st.error("Tesseract‑Executable nicht gefunden. Bitte in **packages.txt** `tesseract-ocr` eintragen.")
+    st.error("Tesseract‑Executable nicht gefunden. Bitte in **packages.txt** tesseract-ocr eintragen.")
     st.stop()
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="PDF Dienstplan Matcher", layout="wide")
-st.title("📄 Dienstpläne beschriften & verteilen (Multi‑PDF)")
+st.title("📄 Dienstpläne beschriften & verteilen (Multi‑PDF)")
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 WEEKDAYS_DE: Dict[str, str] = {
     "Monday": "Montag",
     "Tuesday": "Dienstag",
@@ -39,18 +37,18 @@ WEEKDAYS_DE: Dict[str, str] = {
 }
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Hilfsfunktionen
-# ──────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# Hilfsfunktionen
+# ──────────────────────────────────────────────────────────────────────────────
 
 def kw_year_sunday(d: datetime) -> Tuple[int, int]:
-    """Kalenderwoche & Jahr berechnen – Woche startet Sonntag."""
-    s = d + timedelta(days=1)  # ISO -> Sonntag‑Offset
+    """Kalenderwoche & Jahr berechnen – Woche startet Sonntag."""
+    s = d + timedelta(days=1)  # ISO -> Sonntag‑Offset
     return int(s.strftime("%V")), int(s.strftime("%G"))
 
 
 def format_time(value) -> str:
-    """Zahl, Excel‑Serial, Timestamp oder Time → `HH:MM` String."""
+    """Zahl, Excel‑Serial, Timestamp oder Time → HH:MM String."""
     if pd.isna(value):
         return ""
     if isinstance(value, time):
@@ -69,9 +67,9 @@ def format_time(value) -> str:
 
 
 def extract_entries(row: pd.Series) -> List[dict]:
-    """Extrahiert 0‑2 Fahrer‑Einträge aus einer Excel‑Zeile."""
+    """Extrahiert 0‑2 Fahrer‑Einträge aus einer Excel‑Zeile."""
     entries: List[dict] = []
-    datum = pd.to_datetime(row[14], errors="coerce")  # Spalte O
+    datum = pd.to_datetime(row[14], errors="coerce")  # Spalte O
     if pd.isna(datum):
         return entries
 
@@ -89,10 +87,10 @@ def extract_entries(row: pd.Series) -> List[dict]:
         "LKW": row[11] if len(row) > 11 else "",
     }
 
-    # Fahrer 1
+    # Fahrer 1
     if pd.notna(row[3]) and pd.notna(row[4]):
         entries.append({**base, "Name": f"{str(row[3]).strip()} {str(row[4]).strip()}"})
-    # Fahrer 2
+    # Fahrer 2
     if pd.notna(row[6]) and pd.notna(row[7]):
         entries.append({**base, "Name": f"{str(row[6]).strip()} {str(row[7]).strip()}"})
 
@@ -100,27 +98,128 @@ def extract_entries(row: pd.Series) -> List[dict]:
 
 
 def normalize_name(name: str) -> str:
+    """Normalisiert Namen für besseren Vergleich."""
     return re.sub(r"\s+", " ", name.upper().strip())
 
 
 def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str]) -> List[str]:
-    """Liefert für jede PDF‑Seite den *erkannten* Namen (falls Treffer)."""
+    """
+    Liefert für jede PDF‑Seite den *erkannten* Namen (falls Treffer).
+    Verbesserte Version: Vergleicht Vor- UND Nachnamen separat.
+    """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: List[str] = []
-    normalized_excel = [normalize_name(n) for n in excel_names]
+    
+    # Excel-Namen in Vor- und Nachnamen aufteilen
+    excel_name_parts = []
+    for name in excel_names:
+        parts = name.strip().split()
+        if len(parts) >= 2:
+            vorname = normalize_name(parts[0])
+            nachname = normalize_name(parts[-1])  # Letzter Teil als Nachname
+            excel_name_parts.append({
+                'original': name,
+                'vorname': vorname,
+                'nachname': nachname,
+                'full_normalized': normalize_name(name)
+            })
 
     for page_idx, page in enumerate(doc, start=1):
         text = page.get_text()
-        found = ""
-        for word in text.split():
-            for orig, norm in zip(excel_names, normalized_excel):
-                if normalize_name(word) in norm:
-                    found = orig
-                    break
-            if found:
+        text_words = [normalize_name(word) for word in text.split()]
+        
+        found_name = ""
+        
+        # Durchsuche alle Excel-Namen
+        for name_info in excel_name_parts:
+            vorname_found = False
+            nachname_found = False
+            
+            # Prüfe ob sowohl Vor- als auch Nachname im PDF-Text vorkommen
+            for word in text_words:
+                if name_info['vorname'] in word or word in name_info['vorname']:
+                    vorname_found = True
+                if name_info['nachname'] in word or word in name_info['nachname']:
+                    nachname_found = True
+            
+            # Wenn beide Namen gefunden wurden, ist es ein Match
+            if vorname_found and nachname_found:
+                found_name = name_info['original']
+                st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name} (Vorname: {name_info['vorname']}, Nachname: {name_info['nachname']})")
                 break
-        st.markdown(f"**Seite {page_idx} – Gefundener Name:** `{found or '❌ nicht erkannt'}`")
-        results.append(found)
+        
+        if not found_name:
+            st.markdown(f"**Seite {page_idx} – Gefundener Name:** ❌ nicht erkannt")
+            
+        results.append(found_name)
+    
+    doc.close()
+    return results
+
+
+def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str]) -> List[str]:
+    """
+    Erweiterte Version mit Fuzzy-String-Matching für robusteren Namensabgleich.
+    Benötigt: pip install fuzzywuzzy python-levenshtein
+    """
+    try:
+        from fuzzywuzzy import fuzz
+    except ImportError:
+        st.warning("FuzzyWuzzy nicht installiert. Verwende Standard-Matching.")
+        return extract_names_from_pdf_by_word_match(pdf_bytes, excel_names)
+    
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    results: List[str] = []
+    
+    # Excel-Namen in Vor- und Nachnamen aufteilen
+    excel_name_parts = []
+    for name in excel_names:
+        parts = name.strip().split()
+        if len(parts) >= 2:
+            vorname = normalize_name(parts[0])
+            nachname = normalize_name(parts[-1])
+            excel_name_parts.append({
+                'original': name,
+                'vorname': vorname,
+                'nachname': nachname
+            })
+
+    for page_idx, page in enumerate(doc, start=1):
+        text = page.get_text()
+        text_words = [normalize_name(word) for word in text.split()]
+        
+        found_name = ""
+        best_score = 0
+        
+        # Durchsuche alle Excel-Namen mit Fuzzy-Matching
+        for name_info in excel_name_parts:
+            vorname_score = 0
+            nachname_score = 0
+            
+            # Finde beste Matches für Vor- und Nachname
+            for word in text_words:
+                vorname_ratio = fuzz.ratio(name_info['vorname'], word)
+                nachname_ratio = fuzz.ratio(name_info['nachname'], word)
+                
+                if vorname_ratio > vorname_score:
+                    vorname_score = vorname_ratio
+                if nachname_ratio > nachname_score:
+                    nachname_score = nachname_ratio
+            
+            # Kombiniere Scores (beide Namen müssen mindestens 80% Ähnlichkeit haben)
+            if vorname_score >= 80 and nachname_score >= 80:
+                combined_score = (vorname_score + nachname_score) / 2
+                if combined_score > best_score:
+                    best_score = combined_score
+                    found_name = name_info['original']
+        
+        if found_name:
+            st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name} (Konfidenz: {best_score:.1f}%)")
+        else:
+            st.markdown(f"**Seite {page_idx} – Gefundener Name:** ❌ nicht erkannt")
+            
+        results.append(found_name)
+    
     doc.close()
     return results
 
@@ -139,7 +238,7 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, ann: List[Optional[Dict[str, str]]
         if pno >= len(doc) or not a:
             continue
         page = doc.load_page(pno)
-        txt = " - ".join(filter(None, [a.get("tour"), a.get("weekday"), a.get("time")]))
+        txt = " - ".join(filter(None, [a.get("tour"), a.get("weekday"), a.get("time")]))
         if not txt:
             continue
         rect = page.rect
@@ -164,12 +263,19 @@ def merge_annotated_pdfs(buffers: List[bytes]) -> bytes:
     base.close()
     return out.getvalue()
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 🔽 UI
-# ──────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# 🔽 UI
+# ──────────────────────────────────────────────────────────────────────────────
 
 pdf_files = st.file_uploader("📑 PDFs hochladen", type=["pdf"], accept_multiple_files=True)
 excel_file = st.file_uploader("📊 Tourplan‑Excel hochladen", type=["xlsx", "xls", "xlsm"])
+
+# Option für Matching-Methode
+matching_method = st.selectbox(
+    "🔍 Matching-Methode wählen:",
+    ["Standard (Vor-/Nachname)", "Fuzzy-Matching (robuster)"],
+    help="Fuzzy-Matching erkennt auch Namen mit kleinen Tippfehlern oder OCR-Fehlern"
+)
 
 if not pdf_files:
     st.info("👉 Bitte zuerst eine oder mehrere PDF‑Dateien hochladen.")
@@ -188,10 +294,11 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         filtered = df_excel[(df_excel["KW"] == kw) & (df_excel["Jahr"] == jahr)]
 
     if filtered.empty:
-        st.warning(f"Keine Einträge für KW {kw} ({merged_date.strftime('%d.%m.%Y')}) im Excel gefunden!")
+        st.warning(f"Keine Einträge für KW {kw} ({merged_date.strftime('%d.%m.%Y')}) im Excel gefunden!")
         st.stop()
 
     excel_names = filtered["Name"].unique().tolist()
+    st.info(f"📋 Gefundene Namen in Excel für KW {kw}: {', '.join(excel_names)}")
 
     annotated_buffers: List[bytes] = []
     display_rows: List[dict] = []
@@ -199,7 +306,12 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
     for pdf_file in pdf_files:
         st.subheader(f"📄 **{pdf_file.name}**")
         pdf_bytes = pdf_file.read()
-        ocr_names = extract_names_from_pdf_by_word_match(pdf_bytes, excel_names)
+        
+        # Wähle Matching-Methode basierend auf User-Auswahl
+        if matching_method == "Fuzzy-Matching (robuster)":
+            ocr_names = extract_names_from_pdf_fuzzy_match(pdf_bytes, excel_names)
+        else:
+            ocr_names = extract_names_from_pdf_by_word_match(pdf_bytes, excel_names)
 
         page_ann: List[Optional[dict]] = []
         for ocr in ocr_names:
@@ -215,13 +327,13 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
             else:
                 page_ann.append(None)
 
-        # Tabelle Vorbereitung
+        # Tabelle Vorbereitung
         for i, (ocr, a) in enumerate(zip(ocr_names, page_ann), start=1):
             display_rows.append({
                 "PDF": pdf_file.name,
                 "Seite": i,
                 "Gefundener Name": ocr or "❌",
-                "Zugeordnet": a["matched_name"] if a else "❌ Nein",
+                "Zugeordnet": a["matched_name"] if a else "❌ Nein",
                 "Tour": a["tour"] if a else "",
                 "Wochentag": a["weekday"] if a else "",
                 "Uhrzeit": a["time"] if a else "",
@@ -229,14 +341,20 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
 
         annotated_buffers.append(annotate_pdf_with_tours(pdf_bytes, page_ann))
 
+    st.subheader("📊 Übersicht aller Zuordnungen")
     st.dataframe(pd.DataFrame(display_rows), use_container_width=True)
 
     if any(annotated_buffers):
         st.success("✅ Alle PDFs beschriftet. Finale Datei wird erzeugt …")
         merged_pdf = merge_annotated_pdfs(annotated_buffers)
-        st.download_button("📥 Zusammengeführte beschriftete PDF herunterladen", data=merged_pdf, file_name="dienstplaene_annotiert.pdf", mime="application/pdf")
+        st.download_button(
+            "📥 Zusammengeführte beschriftete PDF herunterladen", 
+            data=merged_pdf, 
+            file_name=f"dienstplaene_annotiert_KW{kw}_{jahr}.pdf", 
+            mime="application/pdf"
+        )
     else:
         st.error("❌ Es konnten keine passenden Namen in den PDFs erkannt werden.")
 
 st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher v1.8 – Mehrfach‑PDF‑Beschriftung*")
+st.markdown("*PDF Dienstplan Matcher v2.0 – Verbessertes Vor-/Nachname-Matching*")
