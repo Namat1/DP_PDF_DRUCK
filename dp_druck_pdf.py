@@ -129,10 +129,10 @@ def ocr_names_from_roi(pdf_bytes: bytes, roi: Tuple[int, int, int, int], dpi: in
         pix = page.get_pixmap(dpi=dpi, alpha=False)
         pil_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-        roi_img = pil_img.crop(roi).convert("L")
-        roi_img = roi_img.point(lambda x: 0 if x < 180 else 255, mode='1')
+        roi_img = pil_img.crop(roi).convert("L")  # Graustufen
+        roi_img = ImageEnhance.Contrast(roi_img).enhance(1.5)  # optional
 
-        custom_config = r"--oem 3 --psm 6"
+        custom_config = r"--oem 3 --psm 7"
         try:
             text = pytesseract.image_to_string(roi_img, lang="deu+eng", config=custom_config)
         except:
@@ -146,6 +146,7 @@ def ocr_names_from_roi(pdf_bytes: bytes, roi: Tuple[int, int, int, int], dpi: in
             names.append("")
     doc.close()
     return names
+
 
 
 def parse_excel_data(excel_file) -> pd.DataFrame:
