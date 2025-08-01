@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-
+"""
+PDF Dienstplan Matcher – v1.8 (Multi‑PDF‑Support)
+=================================================
+• Lädt **beliebig viele PDF‑Dienstpläne** gleichzeitig.
+• Vergleicht OCR‑er­kannte Namen mit einem hochgeladenen Tourplan‑Excel.
+• Beschriftet jede Seite mit Tour‑Nr., Wochentag und Uhrzeit.
+• Fügt alle beschrifteten PDFs zu **einer einzigen Datei** zusammen, die direkt heruntergeladen werden kann.
+"""
 
 import io
 import re
@@ -70,7 +77,7 @@ def format_time(value) -> str:
 
 
 def extract_entries(row: pd.Series) -> List[dict]:
-    """Zieht aus *einer Zeile* alle (ggf. zwei) Fahrer‑Einträge heraus."""
+    """Zieht aus *einer Zeile* bis zu zwei Fahrer‑Einträge heraus."""
     entries: List[dict] = []
 
     datum = pd.to_datetime(row[14], errors="coerce")  # Spalte O (15) laut User‑Layout
@@ -132,7 +139,7 @@ def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str
 
 
 def parse_excel_data(excel_file) -> pd.DataFrame:
-    """Liest Excel *ohne* Header (User‑Layout) → DataFrame normalisiert."""
+    """Liest Excel *ohne* Header gemäß User‑Layout → DataFrame."""
     df = pd.read_excel(excel_file, header=None)
     all_entries: List[dict] = []
     for _, row in df.iterrows():
@@ -141,7 +148,7 @@ def parse_excel_data(excel_file) -> pd.DataFrame:
 
 
 def annotate_pdf_with_tours(pdf_bytes: bytes, annotations: List[Optional[Dict[str, str]]]) -> bytes:
-    """Beschriftet jede Seite mit Tour, Wochentag & Zeit (unten rechts)."""
+    """Beschriftet jede Seite mit Tour, Wochentag & Uhrzeit (unten rechts)."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
     for page_num, annotation in enumerate(annotations):
@@ -167,7 +174,7 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, annotations: List[Optional[Dict[st
 
 
 def merge_annotated_pdfs(buffers: List[bytes]) -> bytes:
-    """Alle annotierten PDFs nacheinander in **eine** PDF zusammenführen."""
+    """Alle annotierten PDFs nacheinander in **eine** Datei zusammenführen."""
     if not buffers:
         return b""
 
@@ -185,85 +192,8 @@ def merge_annotated_pdfs(buffers: List[bytes]) -> bytes:
 # ──────────────────────────────────────────────────────────────────────────────
 # 🔽 UI – Uploads & Eingaben
 # ──────────────────────────────────────────────────────────────────────────────
-\pdf_files = st.file_uploader("📑 PDFs hochladen", type=["pdf"], accept_multiple_files=True)
+pdf_files = st.file_uploader("📑 PDFs hochladen", type=["pdf"], accept_multiple_files=True)
 excel_file = st.file_uploader("📊 Tourplan‑Excel hochladen", type=["xlsx", "xls", "xlsm"])
 
 if not pdf_files:
-    st.info("👉 Bitte zuerst eine oder mehrere PDF‑Dateien hochladen.")
-    st.stop()
-
-verteil_date: date = st.date_input("📅 Dienstpläne verteilen am:", value=date.today(), format="DD.MM.YYYY")
-
-run = st.button("🚀 PDFs analysieren, beschriften & zusammenführen", type="primary")
-
-if run:
-    if not excel_file:
-        st.error("⚠️ Bitte auch die Excel‑Datei hochladen!")
-        st.stop()
-
-    # Excel‑Daten einlesen & auf KW/Jahr filtern
-    with st.spinner("🔍 Excel‑Daten laden & Namen extrahieren …"):
-        excel_df = parse_excel_data(excel_file)
-        kw, yr = kw_year_sunday(verteil_date)
-        filtered = excel_df[(excel_df["KW"] == kw) & (excel_df["Jahr"] == yr)]
-
-    if filtered.empty:
-        st.warning(f"⚠️ Keine Einträge für KW {kw} ({verteil_date:%d.%m.%Y}) in der Excel‑Datei gefunden!")
-        st.stop()
-
-    excel_names = filtered["Name"].unique().tolist()
-
-    display_rows: List[Dict[str, str]] = []
-    annotated_buffers: List[bytes] = []
-
-    # ──────────────────── jede PDF einzeln verarbeiten ────────────────────
-    for pdf_idx, pdf_file in enumerate(pdf_files, start=1):
-        pdf_bytes = pdf_file.read()
-        ocr_names = extract_names_from_pdf_by_word_match(pdf_bytes, excel_names)
-
-        page_annots: List[Optional[Dict[str, str]]] = []
-        for ocr_name in ocr_names:
-            match = filtered[filtered["Name"] == ocr_name]
-            if not match.empty:
-                row = match.iloc[0]
-                page_annots.append({
-                    "matched_name": ocr_name,
-                    "tour": str(row["Tour"]),
-                    "weekday": str(row["Wochentag"]),
-                    "time": str(row["Uhrzeit"]),
-                })
-            else:
-                page_annots.append(None)
-
-        # Tabelle für UI
-        for page_no, (ocr_name, annot) in enumerate(zip(ocr_names, page_annots), start=1):
-            display_rows.append({
-                "PDF": pdf_file.name,
-                "Seite": page_no,
-                "Gefundener Name": ocr_name or "❌ Nicht erkannt",
-                "Zugeordnet": annot["matched_name"] if annot else "❌ Nein",
-                "Tour": annot["tour"] if annot else "",
-                "Wochentag": annot["weekday"] if annot else "",
-                "Uhrzeit": annot["time"] if annot else "",
-            })
-
-        # Annotierte PDF‑Bytes sammeln
-        annotated_buffers.append(annotate_pdf_with_tours(pdf_bytes, page_annots))
-
-    # ───────────────────────────────────────────────────────────────────────
-    st.dataframe(pd.DataFrame(display_rows), use_container_width=True)
-
-    if annotated_buffers:
-        st.success("✅ Alle PDFs beschriftet. Dateien werden zusammengeführt …")
-        final_pdf = merge_annotated_pdfs(annotated_buffers)
-        st.download_button(
-            "📥 Gesamte beschriftete PDF herunterladen",
-            data=final_pdf,
-            file_name="dienstplaene_annotiert_gesamt.pdf",
-            mime="application/pdf",
-        )
-    else:
-        st.error("🚫 Keine Übereinstimmungen – keine beschriftete Datei erzeugt.")
-
-st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher v1.8 – Mehrfach‑PDF‑Support*")
+    st.info("👉 Bitte zuerst eine oder mehrere PDF‑Dateien hoch
