@@ -124,8 +124,8 @@ NAME_PATTERN = re.compile(r"([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)\s+([ÄÖÜA-Z]
 
 def extract_names_from_full_page(pdf_bytes: bytes) -> List[str]:
     """
-    Liest alle Seiten aus und extrahiert den ersten Namen, 
-    indem 'Name' gefolgt von zwei sinnvollen Zeilen (Nachname, Vorname) erkannt wird.
+    Durchsucht jede PDF-Seite nach dem Wort 'Name' und erkennt anschließend
+    zwei sinnvolle aufeinanderfolgende Zeilen als echten Namen.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     names = []
@@ -137,24 +137,27 @@ def extract_names_from_full_page(pdf_bytes: bytes) -> List[str]:
         found_name = ""
         for idx, line in enumerate(lines):
             if line.strip().lower() == "name":
-                # max. 4 Zeilen nach 'Name' prüfen
-                for offset in range(1, 5):
-                    if idx + offset + 1 < len(lines):
-                        part1 = lines[idx + offset].strip()
-                        part2 = lines[idx + offset + 1].strip()
-                        candidate = f"{part1} {part2}"
+                # Starte bei der nächsten Zeile und gehe bis max. +6
+                for j in range(idx + 1, min(idx + 7, len(lines))):
+                    candidate = lines[j].strip()
 
-                        # Nur wenn beides wie echte Namen aussieht
-                        if re.match(r"^[A-ZÄÖÜ][a-zäöüß]+ [A-ZÄÖÜ][a-zäöüß]+$", candidate):
-                            found_name = candidate
+                    # Prüfe, ob zwei Wörter vorhanden sind
+                    if len(candidate.split()) == 2:
+                        first, second = candidate.split()
+                        if all([
+                            re.match(r"^[A-ZÄÖÜ][a-zäöüß-]+$", first),
+                            re.match(r"^[A-ZÄÖÜ][a-zäöüß-]+$", second)
+                        ]):
+                            found_name = f"{first} {second}"
                             break
-                break
+                break  # Nur erste Fundstelle pro Seite prüfen
 
         st.markdown(f"**Seite {i+1} – OCR-Namen:** `{found_name}`")
         names.append(found_name)
 
     doc.close()
     return names
+
 
 
 
