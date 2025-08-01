@@ -1,22 +1,6 @@
 from __future__ import annotations
 
-"""
-PDF Dienstplan Matcher – v1.8 (Multi‑PDF‑Support)
-=================================================
-• Lädt **beliebig viele PDF‑Dienstpläne** gleichzeitig.
-• Vergleicht OCR‑er­kannte Namen pro Seite mit einem hochgeladenen Tourplan‑Excel.
-• Beschriftet jede Seite mit Tour‑Nr., Wochentag und Uhrzeit.
-• Fügt alle beschrifteten PDFs zu **einer einzigen Datei** zusammen, die direkt heruntergeladen werden kann.
 
-Eingabedaten (laut User‑Layout):
-────────────────────────────────
-Excel‑Spalten (0‑basiert):
-  3 = Nachname 1   |  4 = Vorname 1
-  6 = Nachname 2   |  7 = Vorname 2
-  8 = Uhrzeit      | 11 = LKW      | 14 = Datum   | 15 = Tour
-PDF: ein oder mehrere Dateien, jeweils **eine Seite pro Fahrer**.
-Die Kalenderwoche zählt **Sonntag‑bis‑Samstag** (FUHRPARK‑System).
-"""
 
 import io
 import re
@@ -159,7 +143,7 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, ann: List[Optional[Dict[str, str]]
         if not txt:
             continue
         rect = page.rect
-        box = fitz.Rect(rect.width - 650, rect.height - 60, rect.width - 20, rect.height - 15)
+        box = fitz.Rect(rect.width - 650, rect.height - 60, rect.width - 20, rect.height - 25)
         page.insert_textbox(box, txt, fontsize=12, fontname="helv", color=(1, 0, 0), align=fitz.TEXT_ALIGN_RIGHT)
     buf = io.BytesIO()
     doc.save(buf)
