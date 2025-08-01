@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import io
 import re
 import shutil
@@ -11,7 +12,7 @@ import fitz  # PyMuPDF
 import pandas as pd
 import pytesseract
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Tesseract – Pfad setzen (wichtig für Streamlit Cloud)
