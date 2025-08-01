@@ -123,22 +123,32 @@ def extract_entries(row: pd.Series) -> List[dict]:
 NAME_PATTERN = re.compile(r"([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)\s+([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)")
 
 def extract_names_from_full_page(pdf_bytes: bytes) -> List[str]:
-    """Liest aus jeder Seite den ersten Namen (zwei Wörter mit Großbuchstaben am Anfang)."""
+    """
+    Liest alle Seiten aus und extrahiert den ersten Namen, 
+    indem 'Name' gefolgt von zwei Zeilen (Nachname, Vorname) erkannt wird.
+    """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     names = []
+
     for i, page in enumerate(doc):
         text = page.get_text()
-        matches = NAME_PATTERN.findall(text)
-        
-        # Debug-Ausgabe pro Seite
-        st.markdown(f"**Seite {i+1} – Rohtext:**")
-        st.code(text)
+        lines = text.splitlines()
 
-        if matches:
-            name = f"{matches[0][0]} {matches[0][1]}"
-            names.append(name)
-        else:
-            names.append("")
+        found_name = ""
+        for idx, line in enumerate(lines):
+            if line.strip().lower() == "name" and idx + 2 < len(lines):
+                nachname = lines[idx + 1].strip()
+                vorname = lines[idx + 2].strip()
+
+                # Optionale Korrektur: Großschreibung des ersten Buchstabens
+                found_name = f"{nachname} {vorname}".title()
+                break
+
+        # Debug
+        st.markdown(f"**Seite {i+1} – OCR-Namen:** `{found_name}`")
+
+        names.append(found_name)
+
     doc.close()
     return names
 
