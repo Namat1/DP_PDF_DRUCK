@@ -120,19 +120,24 @@ def extract_entries(row: pd.Series) -> List[dict]:
 # OCR‑Regex – zwei **aufeinander­folgende** Großbuchstaben‑Wörter → Vor‑ & Nachname
 NAME_PATTERN = re.compile(r"([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)\s+([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)")
 
-def ocr_names_from_roi(pdf_bytes: bytes, roi: Tuple[int, int, int, int], dpi: int = 300) -> List[str]:
-    """OCR für alle PDF‑Seiten im definierten ROI‑Bereich."""
+def ocr_names_from_roi(pdf_bytes: bytes, roi: Tuple[int, int, int, int], dpi: int = 600) -> List[str]:
+    """OCR für alle PDF‑Seiten im definierten ROI‑Bereich bei hoher Qualität."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     names = []
     for page_num in range(len(doc)):
         page = doc.load_page(page_num)
-        pix = page.get_pixmap(dpi=dpi)
+        pix = page.get_pixmap(dpi=dpi, alpha=False)
         pil_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        roi_img = pil_img.crop(roi)
+
+        roi_img = pil_img.crop(roi).convert("L")
+        roi_img = roi_img.point(lambda x: 0 if x < 180 else 255, mode='1')
+
+        custom_config = r"--oem 3 --psm 6"
         try:
-            text = pytesseract.image_to_string(roi_img, lang="deu+eng")
+            text = pytesseract.image_to_string(roi_img, lang="deu+eng", config=custom_config)
         except:
-            text = pytesseract.image_to_string(roi_img)
+            text = pytesseract.image_to_string(roi_img, config=custom_config)
+
         matches = NAME_PATTERN.findall(text)
         if matches:
             name = f"{matches[0][0]} {matches[0][1]}"
@@ -141,6 +146,7 @@ def ocr_names_from_roi(pdf_bytes: bytes, roi: Tuple[int, int, int, int], dpi: in
             names.append("")
     doc.close()
     return names
+
 
 def parse_excel_data(excel_file) -> pd.DataFrame:
     """Excel-Datei parsen und Fahrer-Einträge extrahieren."""
