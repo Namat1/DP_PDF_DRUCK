@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, time
 from functools import lru_cache
 from typing import List, Tuple, Dict, Optional
 
+import difflib
 import fitz  # PyMuPDF
 import pandas as pd
 import pytesseract
@@ -153,20 +154,16 @@ def parse_excel_data(excel_file) -> pd.DataFrame:
         all_entries.extend(entries)
     return pd.DataFrame(all_entries)
 
+import difflib
+
 def fuzzy_match_name(ocr_name: str, excel_names: List[str]) -> str:
-    """Einfaches Fuzzy Matching für Namen."""
+    """Besseres Fuzzy Matching über difflib.get_close_matches"""
     if not ocr_name.strip():
         return ""
-    ocr_words = set(ocr_name.upper().split())
-    best_match = ""
-    best_score = 0
-    for excel_name in excel_names:
-        excel_words = set(excel_name.upper().split())
-        overlap = len(ocr_words & excel_words)
-        if overlap > best_score:
-            best_score = overlap
-            best_match = excel_name
-    return best_match if best_score > 0 else ""
+    
+    best_matches = difflib.get_close_matches(ocr_name, excel_names, n=1, cutoff=0.6)
+    return best_matches[0] if best_matches else ""
+
 
 def annotate_pdf_with_tours(pdf_bytes: bytes, annotations: List[Optional[Dict[str, str]]]) -> bytes:
     """PDF mit Tour-Informationen (Wochentag, Tour, Uhrzeit) annotieren."""
