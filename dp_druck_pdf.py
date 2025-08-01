@@ -105,23 +105,22 @@ def normalize_name(name: str) -> str:
 def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str]) -> List[str]:
     """
     Liefert für jede PDF‑Seite den *erkannten* Namen (falls Treffer).
-    Verbesserte Version: Vergleicht Vor- UND Nachnamen separat.
+    Verbesserte Version: Vergleicht Vor- UND Nachnamen separat - nur bei exaktem Match beider Namen.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: List[str] = []
     
-    # Excel-Namen in Vor- und Nachnamen aufteilen
+    # Excel-Namen in Vor- und Nachnamen aufteilen (Nachname Vorname Format)
     excel_name_parts = []
     for name in excel_names:
         parts = name.strip().split()
         if len(parts) >= 2:
-            vorname = normalize_name(parts[0])
-            nachname = normalize_name(parts[-1])  # Letzter Teil als Nachname
+            nachname = normalize_name(parts[0])  # Erster Teil ist Nachname
+            vorname = normalize_name(parts[1])   # Zweiter Teil ist Vorname
             excel_name_parts.append({
                 'original': name,
                 'vorname': vorname,
-                'nachname': nachname,
-                'full_normalized': normalize_name(name)
+                'nachname': nachname
             })
 
     for page_idx, page in enumerate(doc, start=1):
@@ -135,17 +134,17 @@ def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str
             vorname_found = False
             nachname_found = False
             
-            # Prüfe ob sowohl Vor- als auch Nachname im PDF-Text vorkommen
+            # Prüfe ob sowohl Vor- als auch Nachname EXAKT im PDF-Text vorkommen
             for word in text_words:
-                if name_info['vorname'] in word or word in name_info['vorname']:
+                if word == name_info['vorname']:
                     vorname_found = True
-                if name_info['nachname'] in word or word in name_info['nachname']:
+                if word == name_info['nachname']:
                     nachname_found = True
             
-            # Wenn beide Namen gefunden wurden, ist es ein Match
+            # Nur bei EXAKTEM Match beider Namen zuordnen
             if vorname_found and nachname_found:
                 found_name = name_info['original']
-                st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name} (Vorname: {name_info['vorname']}, Nachname: {name_info['nachname']})")
+                st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name} (Nachname: {name_info['nachname']}, Vorname: {name_info['vorname']})")
                 break
         
         if not found_name:
@@ -171,13 +170,13 @@ def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str])
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: List[str] = []
     
-    # Excel-Namen in Vor- und Nachnamen aufteilen
+    # Excel-Namen in Vor- und Nachnamen aufteilen (Nachname Vorname Format)
     excel_name_parts = []
     for name in excel_names:
         parts = name.strip().split()
         if len(parts) >= 2:
-            vorname = normalize_name(parts[0])
-            nachname = normalize_name(parts[-1])
+            nachname = normalize_name(parts[0])  # Erster Teil ist Nachname
+            vorname = normalize_name(parts[1])   # Zweiter Teil ist Vorname
             excel_name_parts.append({
                 'original': name,
                 'vorname': vorname,
@@ -206,8 +205,8 @@ def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str])
                 if nachname_ratio > nachname_score:
                     nachname_score = nachname_ratio
             
-            # Kombiniere Scores (beide Namen müssen mindestens 80% Ähnlichkeit haben)
-            if vorname_score >= 80 and nachname_score >= 80:
+            # Kombiniere Scores (beide Namen müssen mindestens 90% Ähnlichkeit haben für exakte Zuordnung)
+            if vorname_score >= 90 and nachname_score >= 90:
                 combined_score = (vorname_score + nachname_score) / 2
                 if combined_score > best_score:
                     best_score = combined_score
@@ -273,8 +272,8 @@ excel_file = st.file_uploader("📊 Tourplan‑Excel hochladen", type=["xlsx", "
 # Option für Matching-Methode
 matching_method = st.selectbox(
     "🔍 Matching-Methode wählen:",
-    ["Standard (Vor-/Nachname)", "Fuzzy-Matching (robuster)"],
-    help="Fuzzy-Matching erkennt auch Namen mit kleinen Tippfehlern oder OCR-Fehlern"
+    ["Standard (Exakter Match)", "Fuzzy-Matching (90% Ähnlichkeit)"],
+    help="Standard: Nur bei exakter Übereinstimmung von Vor- und Nachname. Fuzzy: Erkennt auch kleine Abweichungen (90% Ähnlichkeit erforderlich)"
 )
 
 if not pdf_files:
@@ -308,7 +307,7 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         pdf_bytes = pdf_file.read()
         
         # Wähle Matching-Methode basierend auf User-Auswahl
-        if matching_method == "Fuzzy-Matching (robuster)":
+        if matching_method == "Fuzzy-Matching (90% Ähnlichkeit)":
             ocr_names = extract_names_from_pdf_fuzzy_match(pdf_bytes, excel_names)
         else:
             ocr_names = extract_names_from_pdf_by_word_match(pdf_bytes, excel_names)
@@ -357,4 +356,4 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         st.error("❌ Es konnten keine passenden Namen in den PDFs erkannt werden.")
 
 st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher v2.0 – Verbessertes Vor-/Nachname-Matching*")
+st.markdown("*PDF Dienstplan Matcher v2.1 – Exakter Vor-/Nachname-Match (Nachname Vorname Format)*")
