@@ -143,7 +143,7 @@ def annotate_pdf_with_tours(pdf_bytes: bytes, ann: List[Optional[Dict[str, str]]
         if not txt:
             continue
         rect = page.rect
-        box = fitz.Rect(rect.width - 650, rect.height - 60, rect.width - 20, rect.height - 25)
+        box = fitz.Rect(rect.width - 650, rect.height - 60, rect.width - 20, rect.height - 15)
         page.insert_textbox(box, txt, fontsize=12, fontname="helv", color=(1, 0, 0), align=fitz.TEXT_ALIGN_RIGHT)
     buf = io.BytesIO()
     doc.save(buf)
