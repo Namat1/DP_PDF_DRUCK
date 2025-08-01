@@ -156,13 +156,25 @@ def parse_excel_data(excel_file) -> pd.DataFrame:
 
 import difflib
 
+def normalize_name(name: str) -> str:
+    return " ".join(sorted(name.upper().split()))
+
 def fuzzy_match_name(ocr_name: str, excel_names: List[str]) -> str:
-    """Besseres Fuzzy Matching über difflib.get_close_matches"""
     if not ocr_name.strip():
         return ""
     
-    best_matches = difflib.get_close_matches(ocr_name, excel_names, n=1, cutoff=0.6)
-    return best_matches[0] if best_matches else ""
+    normalized_ocr = normalize_name(ocr_name)
+    normalized_excel = {name: normalize_name(name) for name in excel_names}
+    
+    best_matches = difflib.get_close_matches(normalized_ocr, normalized_excel.values(), n=1, cutoff=0.6)
+    if not best_matches:
+        return ""
+    
+    for orig, norm in normalized_excel.items():
+        if norm == best_matches[0]:
+            return orig
+    return ""
+
 
 
 def annotate_pdf_with_tours(pdf_bytes: bytes, annotations: List[Optional[Dict[str, str]]]) -> bytes:
