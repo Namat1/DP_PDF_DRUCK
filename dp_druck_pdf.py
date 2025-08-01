@@ -122,40 +122,35 @@ def extract_entries(row: pd.Series) -> List[dict]:
 # OCR‑Regex – zwei **aufeinander­folgende** Großbuchstaben‑Wörter → Vor‑ & Nachname
 NAME_PATTERN = re.compile(r"([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)\s+([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)")
 
-def extract_names_from_full_page(pdf_bytes: bytes) -> List[str]:
+def extract_names_from_pdf_by_excel_match(pdf_bytes: bytes, excel_names: List[str]) -> List[str]:
     """
-    Robuste Extraktion: überspringt Tabellenheader, prüft auf echte Namen.
+    Durchsucht jede PDF-Seite nach einem bekannten Excel-Namen.
+    Gibt die erste Übereinstimmung pro Seite zurück (oder leeren String).
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    names = []
+    results = []
+
+    normalized_excel_names = [normalize_name(name) for name in excel_names]
 
     for i, page in enumerate(doc):
         text = page.get_text()
-        lines = text.splitlines()
-        found_name = ""
+        found = ""
 
-        for idx, line in enumerate(lines):
-            if "name" in line.strip().lower():
-                # Durchsuche die nächsten 5 Zeilen nach einem realistisch aussehenden Namen
-                for j in range(idx + 1, min(idx + 6, len(lines))):
-                    line_clean = lines[j].strip()
+        for name in excel_names:
+            if name in text:
+                found = name
+                break
+            # alternativ: fuzzy
+            elif normalize_name(name) in normalize_name(text):
+                found = name
+                break
 
-                    # überspringe offensichtliche Labels
-                    if line_clean.lower() in {"vorname", "von", "bis", "ursache", "datum", "uhrzeit"}:
-                        continue
-
-                    # prüfe auf Muster: zwei Worte, beginnen mit Großbuchstaben
-                    parts = line_clean.split()
-                    if len(parts) == 2 and all(p[0].isupper() for p in parts):
-                        found_name = line_clean
-                        break
-                break  # nach erstem 'Name'-Block abbrechen
-
-        st.markdown(f"**Seite {i+1} – OCR-Namen:** `{found_name}`")
-        names.append(found_name)
+        st.markdown(f"**Seite {i+1} – Gefundener Name:** `{found}`")
+        results.append(found)
 
     doc.close()
-    return names
+    return results
+
 
 
 
