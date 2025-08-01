@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 import io
 import re
 import shutil
@@ -13,7 +12,7 @@ import fitz  # PyMuPDF
 import pandas as pd
 import pytesseract
 import streamlit as st
-from PIL import Image, ImageDraw, ImageEnhance
+from PIL import Image, ImageDraw
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Tesseract – Pfad setzen (wichtig für Streamlit Cloud)
@@ -22,10 +21,7 @@ TESS_CMD = shutil.which("tesseract")
 if TESS_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESS_CMD
 else:
-    st.error(
-        "Tesseract‑Executable nicht gefunden. Bitte in **packages.txt** `tesseract-ocr` "
-        "und optional `tesseract-ocr-deu` eintragen und App neu starten."
-    )
+    st.error("Tesseract‑Executable nicht gefunden. Bitte in **packages.txt** `tesseract-ocr` und optional `tesseract-ocr-deu` eintragen und App neu starten.")
     st.stop()
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -48,49 +44,29 @@ WEEKDAYS_DE = {
 }
 
 def kw_year_sunday(d: datetime) -> Tuple[int, int]:
-    """KW‑Berechnung mit **Sonntag** als Wochen‑Start (ISO +1 Tag)."""
     s = d + timedelta(days=1)
     return int(s.strftime("%V")), int(s.strftime("%G"))
 
 def format_time(value) -> str:
-    """
-    Konvertiert einen Excel-Zeitwert in einen 'HH:MM'-String.
-    Behandelt datetime.time, datetime.datetime, float und String-Eingaben.
-    """
-    if pd.isna(value):
-        return ""
-    if isinstance(value, time):
-        return value.strftime("%H:%M")
-    if isinstance(value, (datetime, pd.Timestamp)):
-        return value.strftime("%H:%M")
+    if pd.isna(value): return ""
+    if isinstance(value, time): return value.strftime("%H:%M")
+    if isinstance(value, (datetime, pd.Timestamp)): return value.strftime("%H:%M")
     if isinstance(value, (int, float)):
-        fractional_part = value % 1
-        total_minutes = round(fractional_part * 1440)
-        hours = total_minutes // 60
-        minutes = total_minutes % 60
-        return f"{hours:02d}:{minutes:02d}"
+        total_minutes = round((value % 1) * 1440)
+        return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
     if isinstance(value, str):
-        try:
-            return pd.to_datetime(value).strftime("%H:%M")
-        except (ValueError, TypeError):
-            return value
+        try: return pd.to_datetime(value).strftime("%H:%M")
+        except: return value
     return str(value)
 
 def extract_entries(row: pd.Series) -> List[dict]:
-    """Liest bis zu **2 Fahrer** aus einer Excel‑Zeile (Spalten hart codiert)."""
-    entries: List[dict] = []
-
-    datum = pd.to_datetime(row[14], errors="coerce")  # Spalte O
-    if pd.isna(datum):
-        return entries
+    entries = []
+    datum = pd.to_datetime(row[14], errors="coerce")
+    if pd.isna(datum): return entries
 
     kw, year = kw_year_sunday(datum)
     weekday = WEEKDAYS_DE.get(datum.day_name(), datum.day_name())
     datum_lang = f"{weekday}, {datum.strftime('%d.%m.%Y')}"
-
-    tour = row[15] if len(row) > 15 else ""
-    uhrzeit = format_time(row[8]) if len(row) > 8 else ""
-    lkw = row[11] if len(row) > 11 else ""
 
     base_entry = {
         "KW": kw,
@@ -98,144 +74,71 @@ def extract_entries(row: pd.Series) -> List[dict]:
         "Datum": datum_lang,
         "Datum_raw": datum,
         "Wochentag": weekday,
-        "Tour": tour,
-        "Uhrzeit": uhrzeit,
-        "LKW": lkw,
+        "Tour": row[15] if len(row) > 15 else "",
+        "Uhrzeit": format_time(row[8]) if len(row) > 8 else "",
+        "LKW": row[11] if len(row) > 11 else "",
     }
-
-    # Fahrer 1 (D,E)
     if pd.notna(row[3]) and pd.notna(row[4]):
-        name = f"{str(row[3]).strip()} {str(row[4]).strip()}"
-        entry1 = base_entry.copy()
-        entry1["Name"] = name
-        entries.append(entry1)
-
-    # Fahrer 2 (G,H)
+        entries.append({**base_entry, "Name": f"{str(row[3]).strip()} {str(row[4]).strip()}"})
     if pd.notna(row[6]) and pd.notna(row[7]):
-        name = f"{str(row[6]).strip()} {str(row[7]).strip()}"
-        entry2 = base_entry.copy()
-        entry2["Name"] = name
-        entries.append(entry2)
-
+        entries.append({**base_entry, "Name": f"{str(row[6]).strip()} {str(row[7]).strip()}"})
     return entries
-
-# OCR‑Regex – zwei **aufeinander­folgende** Großbuchstaben‑Wörter → Vor‑ & Nachname
-NAME_PATTERN = re.compile(r"([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)\s+([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)")
-
-def extract_names_from_pdf_by_excel_match(pdf_bytes: bytes, excel_names: List[str]) -> List[str]:
-    """
-    Durchsucht jede PDF-Seite nach einem bekannten Excel-Namen.
-    Gibt die erste Übereinstimmung pro Seite zurück (oder leeren String).
-    """
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    results = []
-
-    normalized_excel_names = [normalize_name(name) for name in excel_names]
-
-    for i, page in enumerate(doc):
-        text = page.get_text()
-        found = ""
-
-        for name in excel_names:
-            if name in text:
-                found = name
-                break
-            # alternativ: fuzzy
-            elif normalize_name(name) in normalize_name(text):
-                found = name
-                break
-
-        st.markdown(f"**Seite {i+1} – Gefundener Name:** `{found}`")
-        results.append(found)
-
-    doc.close()
-    return results
-
-
-
-
-
-
-
-def parse_excel_data(excel_file) -> pd.DataFrame:
-    """Excel-Datei parsen und Fahrer-Einträge extrahieren."""
-    df = pd.read_excel(excel_file, header=None)
-    all_entries = []
-    for _, row in df.iterrows():
-        entries = extract_entries(row)
-        all_entries.extend(entries)
-    return pd.DataFrame(all_entries)
-
-import difflib
 
 def normalize_name(name: str) -> str:
     return " ".join(sorted(name.upper().split()))
 
 def fuzzy_match_name(ocr_name: str, excel_names: List[str]) -> str:
-    if not ocr_name.strip():
-        return ""
-    
+    if not ocr_name.strip(): return ""
     normalized_ocr = normalize_name(ocr_name)
     normalized_excel = {name: normalize_name(name) for name in excel_names}
-    
-    best_matches = difflib.get_close_matches(normalized_ocr, normalized_excel.values(), n=1, cutoff=0.6)
-    if not best_matches:
-        return ""
-    
-    for orig, norm in normalized_excel.items():
-        if norm == best_matches[0]:
-            return orig
-    return ""
+    best = difflib.get_close_matches(normalized_ocr, normalized_excel.values(), n=1, cutoff=0.6)
+    if not best: return ""
+    return next((orig for orig, norm in normalized_excel.items() if norm == best[0]), "")
 
+def extract_names_from_pdf_by_excel_match(pdf_bytes: bytes, excel_names: List[str]) -> List[str]:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    results = []
+    for i, page in enumerate(doc):
+        text = page.get_text()
+        found = ""
+        for name in excel_names:
+            if name in text or normalize_name(name) in normalize_name(text):
+                found = name
+                break
+        st.markdown(f"**Seite {i+1} – Gefundener Name:** `{found}`")
+        results.append(found)
+    doc.close()
+    return results
 
+def parse_excel_data(excel_file) -> pd.DataFrame:
+    df = pd.read_excel(excel_file, header=None)
+    all_entries = []
+    for _, row in df.iterrows():
+        all_entries.extend(extract_entries(row))
+    return pd.DataFrame(all_entries)
 
 def annotate_pdf_with_tours(pdf_bytes: bytes, annotations: List[Optional[Dict[str, str]]]) -> bytes:
-    """PDF mit Tour-Informationen (Wochentag, Tour, Uhrzeit) annotieren."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    
     for page_num, annotation in enumerate(annotations):
         if page_num < len(doc) and annotation:
             page = doc.load_page(page_num)
-            
-            tour = annotation.get("tour", "")
-            weekday = annotation.get("weekday", "")
-            uhrzeit = annotation.get("time", "")
-            
-            # Text für die Beschriftung im neuen Format zusammenbauen
-            parts = []
-            if tour:
-                parts.append(tour)
-            if weekday:
-                parts.append(weekday)
-            if uhrzeit:
-                parts.append(f"{uhrzeit} Uhr")
-            
-            text_to_insert = " - ".join(parts)
-            
-            # Tour-Nr. unten rechts einfügen
-            rect = page.rect
-            text_rect = fitz.Rect(rect.width - 650, rect.height - 60, rect.width - 20, rect.height - 15)
-            
-            page.insert_textbox(
-                text_rect,
-                text_to_insert,
-                fontsize=12,
-                fontname="hebo",
-                color=(1, 0, 0),  # Rot
-                align=fitz.TEXT_ALIGN_RIGHT
+            text = " - ".join(
+                filter(None, [annotation.get("tour", ""), annotation.get("weekday", ""), f"{annotation.get('time', '')} Uhr"])
             )
-    
-    output_buffer = io.BytesIO()
-    doc.save(output_buffer)
+            rect = page.rect
+            box = fitz.Rect(rect.width - 650, rect.height - 60, rect.width - 20, rect.height - 15)
+            page.insert_textbox(box, text, fontsize=12, fontname="hebo", color=(1, 0, 0), align=fitz.TEXT_ALIGN_RIGHT)
+    output = io.BytesIO()
+    doc.save(output)
     doc.close()
-    output_buffer.seek(0)
-    return output_buffer.getvalue()
+    output.seek(0)
+    return output.getvalue()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Datei‑Uploads
 # ──────────────────────────────────────────────────────────────────────────────
-pdf_file = st.file_uploader("📑 PDF hochladen", type=["pdf"], key="pdf")
-excel_file = st.file_uploader("📊 Tourplan-Excel hochladen", type=["xlsx", "xlsm"], key="excel")
+pdf_file = st.file_uploader("📁 PDF hochladen", type=["pdf"])
+excel_file = st.file_uploader("📊 Tourplan-Excel hochladen", type=["xlsx", "xlsm"])
 
 if not pdf_file:
     st.info("👉 Bitte zuerst ein PDF hochladen.")
@@ -243,114 +146,55 @@ if not pdf_file:
 
 pdf_bytes = pdf_file.read()
 
-# ──────────────────────────────────────────────────────────────────────────────
-# ROI interaktiv festlegen + visuell anzeigen
-# ──────────────────────────────────────────────────────────────────────────────
-st.markdown("### 🔍 OCR-Bereich (ROI) festlegen")
+verteil_date: date = st.date_input("📅 Dienstpläne verteilen am:", value=date.today(), format="DD.MM.YYYY")
 
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    left = st.number_input("↔️ Links (x)", min_value=0, max_value=2000, value=50)
-with col2:
-    top = st.number_input("↕️ Oben (y)", min_value=0, max_value=2000, value=620)
-with col3:
-    right = st.number_input("↔️ Rechts (x)", min_value=0, max_value=2000, value=370)
-with col4:
-    bottom = st.number_input("↕️ Unten (y)", min_value=0, max_value=2000, value=710)
-
-roi_box = (left, top, right, bottom)
-
-# Seite 1 als Bild rendern und ROI einzeichnen
-doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-page = doc.load_page(0)
-pix = page.get_pixmap(dpi=300)
-img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-draw = ImageDraw.Draw(img)
-draw.rectangle(roi_box, outline="red", width=3)
-
-st.image(img, caption="🔴 Roter Rahmen = OCR-Bereich auf Seite 1", use_container_width=True)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Verteilungs‑Datum (vom Nutzer bestimmen lassen)
-# ──────────────────────────────────────────────────────────────────────────────
-verteil_date: date = st.date_input(
-    "📅 Dienstpläne verteilen am:", value=date.today(), format="DD.MM.YYYY"
-)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Haupt‑Button – OCR, Excel, Match & Annotate
-# ──────────────────────────────────────────────────────────────────────────────
 if st.button("🚀 OCR & PDF beschriften", type="primary"):
     if not excel_file:
         st.error("⚠️ Bitte auch die Excel‑Datei hochladen!")
         st.stop()
-    
+
     with st.spinner("🔍 OCR läuft und Excel wird verarbeitet..."):
-        ocr_names = extract_names_from_full_page(pdf_bytes)
         excel_data = parse_excel_data(excel_file)
         filtered_data = excel_data[excel_data['Datum_raw'].dt.date == verteil_date]
-    
+        excel_names = filtered_data['Name'].unique().tolist()
+        ocr_names = extract_names_from_pdf_by_excel_match(pdf_bytes, excel_names)
+
     if filtered_data.empty:
         st.warning(f"⚠️ Keine Einträge für {verteil_date.strftime('%d.%m.%Y')} in der Excel-Datei gefunden!")
     else:
-        excel_names = filtered_data['Name'].unique().tolist()
         page_annotations = []
-        
         for ocr_name in ocr_names:
-            matched_name = fuzzy_match_name(ocr_name, excel_names)
-            if matched_name:
-                match_entry = filtered_data[filtered_data['Name'] == matched_name].iloc[0]
-                annotation_info = {
-                    "matched_name": matched_name,
-                    "tour": str(match_entry['Tour']),
-                    "weekday": str(match_entry['Wochentag']),
-                    "time": str(match_entry['Uhrzeit'])
-                }
-                page_annotations.append(annotation_info)
+            matched = fuzzy_match_name(ocr_name, excel_names)
+            if matched:
+                row = filtered_data[filtered_data['Name'] == matched].iloc[0]
+                page_annotations.append({
+                    "matched_name": matched,
+                    "tour": str(row['Tour']),
+                    "weekday": str(row['Wochentag']),
+                    "time": str(row['Uhrzeit'])
+                })
             else:
                 page_annotations.append(None)
-        
-        # --- NEU: Diagnose-Tabelle erstellen und anzeigen ---
+
         st.markdown("---")
         st.subheader("🔍 Ergebnis der Zuordnung")
-        
-        display_data = []
-        for i, (ocr_name, annotation) in enumerate(zip(ocr_names, page_annotations)):
-            row_data = {
-                "PDF Seite": i + 1,
-                "Gefundener Name (OCR)": ocr_name or "N/A",
-                "Zugeordnet (Excel)": annotation.get("matched_name", "❌ Nein") if annotation else "❌ Nein",
-                "Tour": annotation.get("tour", "") if annotation else "",
-                "Wochentag": annotation.get("weekday", "") if annotation else "",
-                "Uhrzeit": annotation.get("time", "") if annotation else ""
-            }
-            display_data.append(row_data)
-        
-        st.dataframe(pd.DataFrame(display_data), use_container_width=True)
-        st.info("Bitte überprüfen Sie die Zuordnung. Nur für Seiten mit einem zugeordneten Namen wird eine Beschriftung erzeugt.")
-        st.markdown("---")
-        
-        matched_count = sum(1 for anno in page_annotations if anno)
-        
-        if matched_count > 0:
+        st.dataframe(pd.DataFrame([{
+            "PDF Seite": i + 1,
+            "Gefundener Name (OCR)": ocr or "N/A",
+            "Zugeordnet (Excel)": a.get("matched_name", "❌ Nein") if a else "❌ Nein",
+            "Tour": a.get("tour", "") if a else "",
+            "Wochentag": a.get("weekday", "") if a else "",
+            "Uhrzeit": a.get("time", "") if a else ""
+        } for i, (ocr, a) in enumerate(zip(ocr_names, page_annotations))]), use_container_width=True)
+
+        matched = sum(1 for a in page_annotations if a)
+        if matched:
             with st.spinner("📝 PDF wird beschriftet..."):
-                annotated_pdf = annotate_pdf_with_tours(pdf_bytes, page_annotations)
-            
-            st.download_button(
-                label="📥 Beschriftete PDF herunterladen",
-                data=annotated_pdf,
-                file_name=f"dienstplan_annotiert_{verteil_date.strftime('%Y%m%d')}.pdf",
-                mime="application/pdf",
-                type="primary"
-            )
+                result = annotate_pdf_with_tours(pdf_bytes, page_annotations)
+            st.download_button("📥 Beschriftete PDF herunterladen", data=result,
+                file_name=f"dienstplan_annotiert_{verteil_date.strftime('%Y%m%d')}.pdf", mime="application/pdf")
         else:
-            st.error("Es konnten keine Übereinstimmungen zwischen PDF und Excel-Liste gefunden werden.")
+            st.error("❌ Keine Zuordnungen gefunden – PDF bleibt unbearbeitet.")
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Footer
-# ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher v1.6 – Format der Beschriftung angepasst*")
+st.markdown("*PDF Dienstplan Matcher v1.6 – Jetzt mit intelligentem Abgleich gegen Excel-Inhalte*")
