@@ -124,8 +124,7 @@ NAME_PATTERN = re.compile(r"([ÄÖÜA-Z][ÄÖÜA-Za-zäöüß-]+)\s+([ÄÖÜA-Z]
 
 def extract_names_from_full_page(pdf_bytes: bytes) -> List[str]:
     """
-    Durchsucht jede PDF-Seite nach dem Wort 'Name' und erkennt anschließend
-    zwei sinnvolle aufeinanderfolgende Zeilen als echten Namen.
+    Robuste Extraktion: überspringt Tabellenheader, prüft auf echte Namen.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     names = []
@@ -133,24 +132,24 @@ def extract_names_from_full_page(pdf_bytes: bytes) -> List[str]:
     for i, page in enumerate(doc):
         text = page.get_text()
         lines = text.splitlines()
-
         found_name = ""
-        for idx, line in enumerate(lines):
-            if line.strip().lower() == "name":
-                # Starte bei der nächsten Zeile und gehe bis max. +6
-                for j in range(idx + 1, min(idx + 7, len(lines))):
-                    candidate = lines[j].strip()
 
-                    # Prüfe, ob zwei Wörter vorhanden sind
-                    if len(candidate.split()) == 2:
-                        first, second = candidate.split()
-                        if all([
-                            re.match(r"^[A-ZÄÖÜ][a-zäöüß-]+$", first),
-                            re.match(r"^[A-ZÄÖÜ][a-zäöüß-]+$", second)
-                        ]):
-                            found_name = f"{first} {second}"
-                            break
-                break  # Nur erste Fundstelle pro Seite prüfen
+        for idx, line in enumerate(lines):
+            if "name" in line.strip().lower():
+                # Durchsuche die nächsten 5 Zeilen nach einem realistisch aussehenden Namen
+                for j in range(idx + 1, min(idx + 6, len(lines))):
+                    line_clean = lines[j].strip()
+
+                    # überspringe offensichtliche Labels
+                    if line_clean.lower() in {"vorname", "von", "bis", "ursache", "datum", "uhrzeit"}:
+                        continue
+
+                    # prüfe auf Muster: zwei Worte, beginnen mit Großbuchstaben
+                    parts = line_clean.split()
+                    if len(parts) == 2 and all(p[0].isupper() for p in parts):
+                        found_name = line_clean
+                        break
+                break  # nach erstem 'Name'-Block abbrechen
 
         st.markdown(f"**Seite {i+1} – OCR-Namen:** `{found_name}`")
         names.append(found_name)
