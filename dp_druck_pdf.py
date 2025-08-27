@@ -236,6 +236,14 @@ def extract_names_from_pdf_robust_text(pdf_bytes: bytes, excel_names: List[str])
     doc.close()
     return results
 
+def parse_excel_data(excel_file) -> pd.DataFrame:
+    """Excel einlesen und alle Fahrer-Einträge extrahieren."""
+    df = pd.read_excel(excel_file, header=None)
+    entries: List[dict] = []
+    for _, row in df.iterrows():
+        entries.extend(extract_entries(row))
+    return pd.DataFrame(entries)
+
 # ──────────────────────────────────────────────────────────────────────────────
 # PDF Beschriften / Mergen
 # ──────────────────────────────────────────────────────────────────────────────
@@ -300,7 +308,6 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         st.stop()
 
     with st.spinner("🔍 Excel-Daten einlesen …"):
-        df_excel = pd.DataFrame()
         try:
             df_excel = parse_excel_data(excel_file)
         except Exception as e:
