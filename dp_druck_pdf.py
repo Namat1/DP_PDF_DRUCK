@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import re
 import shutil
+import unicodedata
 from datetime import date, datetime, timedelta, time
 from typing import List, Tuple, Dict, Optional
 
@@ -86,12 +87,35 @@ def extract_entries(row: pd.Series) -> List[dict]:
     return entries
 
 def normalize_name(name: str) -> str:
-    """Normalisiert Namen für besseren Vergleich."""
+    """Einfache Normalisierung für Wort-genaues Matching."""
     return re.sub(r"\s+", " ", name.upper().strip())
+
+def de_ascii_normalize(s: str) -> str:
+    """
+    Robuste DE-Normalisierung:
+    - ä/ö/ü → ae/oe/ue; ß → ss
+    - Unicode NFKD (zerlegt Akzente/Ligaturen)
+    - entfernt diakritische Zeichen
+    - Nicht-Buchstaben/Ziffern → Leerzeichen
+    - Mehrfach-Leerzeichen zu eins
+    - Uppercase
+    """
+    if not isinstance(s, str):
+        s = str(s)
+    s = (s.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
+           .replace("Ä", "AE").replace("Ö", "OE").replace("Ü", "UE")
+           .replace("ß", "ss").replace("ẞ", "SS"))
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^A-Za-z0-9]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s.upper()
+
+# ── Matching-Methoden ─────────────────────────────────────────────────────────
 
 def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str]) -> List[str]:
     """
-    Ermittelt je Seite einen Namen durch EXAKTES Wort-Matching (Vor- und Nachname müssen getrennt auftauchen).
+    Ermittelt je Seite einen Namen durch EXAKTES Wort-Matching (Vor- und Nachname müssen als einzelne Wörter auftauchen).
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: List[str] = []
@@ -115,7 +139,7 @@ def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str
             nachname_found = any(word == name_info['nachname'] for word in text_words)
             if vorname_found and nachname_found:
                 found_name = name_info['original']
-                st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name}")
+                st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name} (exakt)")
                 break
 
         if not found_name:
@@ -174,12 +198,47 @@ def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str])
     doc.close()
     return results
 
-def parse_excel_data(excel_file) -> pd.DataFrame:
-    df = pd.read_excel(excel_file, header=None)
-    entries: List[dict] = []
-    for _, row in df.iterrows():
-        entries.extend(extract_entries(row))
-    return pd.DataFrame(entries)
+def extract_names_from_pdf_robust_text(pdf_bytes: bytes, excel_names: List[str]) -> List[str]:
+    """
+    Robustes Matching:
+    - Ganze Seite als Fließtext
+    - Starke DE-Normalisierung (de_ascii_normalize)
+    - Substring-Suche in Varianten 'NACHNAME VORNAME' und 'VORNAME NACHNAME'
+    - Fängt Zeilenumbrüche, Ligaturen, Umlaute/ß, Sonderzeichen zuverlässig ab.
+    """
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    results: List[str] = []
+
+    name_variants = []
+    for full in excel_names:
+        parts = [p for p in str(full).strip().split() if p]
+        if len(parts) >= 2:
+            nachname, vorname = parts[0], parts[1]
+            v1 = f"{nachname} {vorname}"
+            v2 = f"{vorname} {nachname}"
+            name_variants.append((full, de_ascii_normalize(v1), de_ascii_normalize(v2)))
+
+    for page_idx, page in enumerate(doc, start=1):
+        text = page.get_text("text")
+        norm = de_ascii_normalize(text)
+
+        found = ""
+        for original, v1, v2 in name_variants:
+            if v1 in norm or v2 in norm:
+                found = original
+                st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {original} (robust)")
+                break
+
+        if not found:
+            st.markdown(f"**Seite {page_idx} – Gefundener Name:** ❌ nicht erkannt")
+        results.append(found)
+
+    doc.close()
+    return results
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PDF Beschriften / Mergen
+# ──────────────────────────────────────────────────────────────────────────────
 
 def annotate_pdf_with_tours(pdf_bytes: bytes, ann: List[Optional[Dict[str, str]]]) -> bytes:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -218,18 +277,21 @@ def merge_annotated_pdfs(buffers: List[bytes]) -> bytes:
 pdf_files = st.file_uploader("📑 PDFs hochladen", type=["pdf"], accept_multiple_files=True)
 excel_file = st.file_uploader("📊 Tourplan-Excel hochladen", type=["xlsx", "xls", "xlsm"])
 
-# Matching-Methode
 matching_method = st.selectbox(
     "🔍 Matching-Methode wählen:",
-    ["Standard (Exakter Match)", "Fuzzy-Matching (90% Ähnlichkeit)"],
-    help="Standard: Nur bei exakter Übereinstimmung von Vor- und Nachname. Fuzzy: erkennt kleine Abweichungen (90%)."
+    ["Standard (Exakter Match)", "Fuzzy-Matching (90% Ähnlichkeit)", "Robust (Text-Normalisierung)"],
+    help=(
+        "Standard: Vor- und Nachname müssen als getrennte Wörter im PDF stehen. "
+        "Fuzzy: toleriert kleinere OCR-Fehler. "
+        "Robust: sucht im normalisierten Fließtext (empfohlen bei Zeilenumbrüchen/Ligaturen/Umlauten/ß)."
+    )
 )
 
 if not pdf_files:
     st.info("👉 Bitte zuerst eine oder mehrere PDF-Dateien hochladen.")
     st.stop()
 
-# *** WICHTIG: Genau dieses Datum wird gesucht (nicht KW-weit) ***
+# *** WICHTIG: Striktes Datumsmatching – nur dieses Datum wird verwendet ***
 search_date: date = st.date_input("📅 Gesuchtes Datum (aus Excel Spalte O)", value=date.today(), format="DD.MM.YYYY")
 
 if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
@@ -238,7 +300,12 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         st.stop()
 
     with st.spinner("🔍 Excel-Daten einlesen …"):
-        df_excel = parse_excel_data(excel_file)
+        df_excel = pd.DataFrame()
+        try:
+            df_excel = parse_excel_data(excel_file)
+        except Exception as e:
+            st.exception(e)
+            st.stop()
 
     # Nur dieses Datum verwenden (kein KW-Fallback!)
     day_df = df_excel[df_excel["Datum_raw"].dt.date == search_date].copy()
@@ -260,6 +327,8 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         # OCR-Namen je Seite (gewählte Methode)
         if matching_method == "Fuzzy-Matching (90% Ähnlichkeit)":
             ocr_names = extract_names_from_pdf_fuzzy_match(pdf_bytes, excel_names)
+        elif matching_method == "Robust (Text-Normalisierung)":
+            ocr_names = extract_names_from_pdf_robust_text(pdf_bytes, excel_names)
         else:
             ocr_names = extract_names_from_pdf_by_word_match(pdf_bytes, excel_names)
 
@@ -314,4 +383,4 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         st.error("❌ Es konnten keine passenden Namen am gewählten Datum erkannt werden.")
 
 st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher – Striktes Datumsmatching (Spalte O)*")
+st.markdown("*PDF Dienstplan Matcher – Striktes Datumsmatching (Spalte O) + Robustes Namens-Matching*")
