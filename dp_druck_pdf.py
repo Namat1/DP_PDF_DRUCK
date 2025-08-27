@@ -6,6 +6,7 @@ import shutil
 import unicodedata
 from datetime import date, datetime, time
 from typing import List, Dict, Optional
+from PIL import Image
 
 import fitz  # PyMuPDF
 import pandas as pd
@@ -38,7 +39,7 @@ WEEKDAYS_DE: Dict[str, str] = {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Excel + Normalisierung
+# Excel + Normalisierung (bestehende Funktionen bleiben gleich)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def format_time(value) -> str:
@@ -107,7 +108,7 @@ def prepend_filename_to_text(page_text: str, pdf_name: str) -> str:
     return f"__FILENAME__: {pdf_name}\n{page_text}"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Dateiname → Priorisierung + Adler-Regel
+# Dateiname → Priorisierung + Adler-Regel (bestehende Funktionen bleiben gleich)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def filename_tokens(pdf_name: str) -> list[str]:
@@ -144,101 +145,198 @@ def choose_best_candidate(candidates: list[str], pdf_name: str) -> Optional[str]
     return filtered[0]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Matching-Methoden (Standard, Fuzzy, Robust)
+# VERBESSERTE NAMENERKENNUNG mit OCR + Mehreren Strategien
 # ──────────────────────────────────────────────────────────────────────────────
 
-def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: list[str], pdf_name: str) -> list[str]:
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    results: list[str] = []
+def extract_text_with_ocr(page, use_ocr: bool = True) -> str:
+    """Extrahiert Text aus PDF-Seite mit optionalem OCR für Bilder"""
+    # Zuerst normalen Text versuchen
+    text = page.get_text("text")
+    
+    if not use_ocr or len(text.strip()) > 50:  # Wenn genug Text vorhanden, kein OCR nötig
+        return text
+    
+    try:
+        # OCR für die gesamte Seite als Fallback
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x Vergrößerung für bessere OCR
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        
+        # OCR mit deutschen Optionen
+        ocr_text = pytesseract.image_to_string(
+            img, 
+            lang='deu+eng',
+            config='--psm 6 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzäöüßÄÖÜ0123456789 .-'
+        )
+        
+        # Kombiniere beide Texte
+        combined_text = f"{text}\n---OCR---\n{ocr_text}"
+        return combined_text
+        
+    except Exception as e:
+        st.warning(f"OCR fehlgeschlagen: {str(e)}")
+        return text
 
-    excel_name_parts = []
-    for name in excel_names:
-        parts = name.strip().split()
-        if len(parts) >= 2:
-            excel_name_parts.append({'original': name, 'vorname': normalize_name(parts[1]), 'nachname': normalize_name(parts[0])})
+def create_name_variants(full_name: str) -> dict:
+    """Erstellt alle möglichen Varianten eines Namens für besseres Matching"""
+    parts = full_name.strip().split()
+    if len(parts) < 2:
+        return {}
+    
+    nachname, vorname = parts[0], parts[1]
+    
+    variants = {
+        'original': full_name,
+        'nachname': nachname,
+        'vorname': vorname,
+        'full_normalized': normalize_name(full_name),
+        'nachname_normalized': normalize_name(nachname),
+        'vorname_normalized': normalize_name(vorname),
+        'ascii_full': de_ascii_normalize(full_name),
+        'ascii_nachname': de_ascii_normalize(nachname),
+        'ascii_vorname': de_ascii_normalize(vorname),
+        'reversed': f"{vorname} {nachname}",  # Falls Vor- und Nachname vertauscht sind
+        'initials': f"{nachname[0]}.{vorname[0]}." if nachname and vorname else "",
+        'short_variants': []
+    }
+    
+    # Kurze Varianten (z.B. "Max Mustermann" -> "Max M.", "M. Mustermann")
+    if len(nachname) > 0 and len(vorname) > 0:
+        variants['short_variants'].extend([
+            f"{vorname} {nachname[0]}.",
+            f"{vorname[0]}. {nachname}",
+            f"{nachname}, {vorname}",  # Komma-Format
+            f"{nachname},{vorname}",   # Ohne Leerzeichen
+        ])
+    
+    return variants
 
-    for page_idx, page in enumerate(doc, start=1):
-        text = prepend_filename_to_text(page.get_text("text"), pdf_name)
-        text_words = [normalize_name(w) for w in text.split()]
-
-        candidates = []
-        for info in excel_name_parts:
-            if info['vorname'] in text_words and info['nachname'] in text_words:
-                candidates.append(info['original'])
-
-        chosen = choose_best_candidate(candidates, pdf_name) if candidates else ""
-        results.append(chosen)
-        st.markdown(f"**Seite {page_idx} – Gefundener Name:** {'✅ ' + chosen if chosen else '❌ nicht erkannt'}")
-
-    doc.close()
-    return results
-
-def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: list[str], pdf_name: str) -> list[str]:
+def fuzzy_match_with_threshold(text: str, name_variants: dict, threshold: int = 85) -> int:
+    """Fuzzy-Matching mit konfigurierbarem Threshold"""
     try:
         from fuzzywuzzy import fuzz
+        
+        max_score = 0
+        text_upper = text.upper()
+        
+        # Teste alle Varianten
+        for key, value in name_variants.items():
+            if key == 'short_variants':
+                for variant in value:
+                    score = fuzz.partial_ratio(variant.upper(), text_upper)
+                    max_score = max(max_score, score)
+            elif isinstance(value, str) and value:
+                score = fuzz.partial_ratio(value.upper(), text_upper)
+                max_score = max(max_score, score)
+        
+        return max_score
     except ImportError:
-        st.warning("FuzzyWuzzy fehlt → Standard-Matching.")
-        return extract_names_from_pdf_by_word_match(pdf_bytes, excel_names, pdf_name)
+        return 0
 
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    results: list[str] = []
-
-    excel_name_parts = []
+def advanced_name_matching(text: str, excel_names: list[str], pdf_name: str, debug: bool = False) -> list[str]:
+    """Erweiterte Namenerkennung mit mehreren Strategien"""
+    
+    candidates = []
+    debug_info = []
+    
+    # Erstelle Varianten für alle Namen
+    name_variants_list = []
     for name in excel_names:
-        parts = name.strip().split()
-        if len(parts) >= 2:
-            excel_name_parts.append({'original': name, 'vorname': normalize_name(parts[1]), 'nachname': normalize_name(parts[0])})
+        variants = create_name_variants(name)
+        name_variants_list.append(variants)
+    
+    text_normalized = normalize_name(text)
+    text_ascii = de_ascii_normalize(text)
+    text_words = text_normalized.split()
+    text_lines = [line.strip() for line in text.split('\n') if line.strip()]
+    
+    for variants in name_variants_list:
+        original_name = variants['original']
+        match_score = 0
+        match_method = ""
+        
+        # Strategie 1: Exakte Wort-Matches
+        if variants['nachname_normalized'] in text_words and variants['vorname_normalized'] in text_words:
+            match_score = 100
+            match_method = "Exakte Wörter"
+        
+        # Strategie 2: ASCII-normalisierter Text-Match
+        elif variants['ascii_nachname'] in text_ascii and variants['ascii_vorname'] in text_ascii:
+            match_score = 95
+            match_method = "ASCII-normalisiert"
+        
+        # Strategie 3: Zeilen-basierte Suche (Namen stehen oft in einer Zeile)
+        elif any(variants['ascii_nachname'] in de_ascii_normalize(line) and 
+                variants['ascii_vorname'] in de_ascii_normalize(line) for line in text_lines):
+            match_score = 90
+            match_method = "Zeilen-Match"
+        
+        # Strategie 4: Fuzzy-Matching
+        else:
+            fuzzy_score = fuzzy_match_with_threshold(text, variants, threshold=80)
+            if fuzzy_score >= 80:
+                match_score = fuzzy_score
+                match_method = f"Fuzzy ({fuzzy_score}%)"
+        
+        # Strategie 5: Kurze Varianten (Initialen, etc.)
+        if match_score == 0:
+            for short_variant in variants['short_variants']:
+                if de_ascii_normalize(short_variant) in text_ascii:
+                    match_score = 70
+                    match_method = f"Kurzvariante: {short_variant}"
+                    break
+        
+        if match_score > 0:
+            candidates.append((original_name, match_score, match_method))
+            debug_info.append(f"✅ {original_name}: {match_score}% ({match_method})")
+        else:
+            debug_info.append(f"❌ {original_name}: Nicht gefunden")
+    
+    if debug:
+        for info in debug_info:
+            st.write(info)
+    
+    # Sortiere nach Score und wähle besten Kandidaten
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    
+    if candidates:
+        best_candidates = [c[0] for c in candidates if c[1] >= candidates[0][1] - 10]  # Ähnliche Scores
+        return [choose_best_candidate(best_candidates, pdf_name) or candidates[0][0]]
+    
+    return []
 
-    for page_idx, page in enumerate(doc, start=1):
-        text = prepend_filename_to_text(page.get_text("text"), pdf_name)
-        text_words = [normalize_name(w) for w in text.split()]
-
-        candidates = []
-        for info in excel_name_parts:
-            vs = max((fuzz.ratio(info['vorname'], w) for w in text_words), default=0)
-            ns = max((fuzz.ratio(info['nachname'], w) for w in text_words), default=0)
-            if vs >= 90 and ns >= 90:
-                candidates.append(info['original'])
-
-        chosen = choose_best_candidate(candidates, pdf_name) if candidates else ""
-        results.append(chosen)
-        st.markdown(f"**Seite {page_idx} – Gefundener Name:** {'✅ ' + chosen if chosen else '❌ nicht erkannt'}")
-
-    doc.close()
-    return results
-
-def extract_names_from_pdf_robust_text(pdf_bytes: bytes, excel_names: list[str], pdf_name: str) -> list[str]:
+def extract_names_enhanced(pdf_bytes: bytes, excel_names: list[str], pdf_name: str, use_ocr: bool = True) -> list[str]:
+    """Verbesserte Hauptfunktion für Namenerkennung"""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: list[str] = []
-
-    variants = []
-    for full in excel_names:
-        parts = full.strip().split()
-        if len(parts) >= 2:
-            nachname, vorname = parts[0], parts[1]
-            v1 = de_ascii_normalize(f"{nachname} {vorname}")
-            v2 = de_ascii_normalize(f"{vorname} {nachname}")
-            variants.append((full, v1, v2, v1.replace(" ",""), v2.replace(" ","")))
-
+    
     for page_idx, page in enumerate(doc, start=1):
-        text_with_filename = prepend_filename_to_text(page.get_text("text"), pdf_name)
-        norm = de_ascii_normalize(text_with_filename)
-        norm_nosp = norm.replace(" ", "")
-
-        candidates = []
-        for original, v1, v2, v1n, v2n in variants:
-            if v1 in norm or v2 in norm or v1n in norm_nosp or v2n in norm_nosp:
-                candidates.append(original)
-
-        chosen = choose_best_candidate(candidates, pdf_name) if candidates else ""
+        st.markdown(f"### Seite {page_idx}")
+        
+        # Text mit optionalem OCR extrahieren
+        text = extract_text_with_ocr(page, use_ocr)
+        text_with_filename = prepend_filename_to_text(text, pdf_name)
+        
+        # Zeige extrahierten Text (erste 500 Zeichen)
+        with st.expander(f"📄 Extrahierter Text (Seite {page_idx})"):
+            st.text(text_with_filename[:500] + "..." if len(text_with_filename) > 500 else text_with_filename)
+        
+        # Erweiterte Namenerkennung
+        with st.expander(f"🔍 Matching-Details (Seite {page_idx})"):
+            matched_names = advanced_name_matching(text_with_filename, excel_names, pdf_name, debug=True)
+        
+        chosen = matched_names[0] if matched_names else ""
         results.append(chosen)
-        st.markdown(f"**Seite {page_idx} – Gefundener Name:** {'✅ ' + chosen if chosen else '❌ nicht erkannt'}")
-
+        
+        if chosen:
+            st.success(f"**✅ Gefunden:** {chosen}")
+        else:
+            st.error("**❌ Kein Name erkannt**")
+    
     doc.close()
     return results
 
 # ──────────────────────────────────────────────────────────────────────────────
-# PDF annotieren / mergen
+# PDF annotieren / mergen (bestehende Funktionen bleiben gleich)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def annotate_pdf_with_tours(pdf_bytes: bytes, ann: list[Optional[Dict[str, str]]]) -> bytes:
@@ -272,16 +370,19 @@ def merge_annotated_pdfs(buffers: list[bytes]) -> bytes:
     return out.getvalue()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# UI
+# VERBESSERTE UI
 # ──────────────────────────────────────────────────────────────────────────────
 
 pdf_files = st.file_uploader("📑 PDFs hochladen", type=["pdf"], accept_multiple_files=True)
 excel_file = st.file_uploader("📊 Tourplan-Excel hochladen", type=["xlsx", "xls", "xlsm"])
 
-matching_method = st.selectbox(
-    "🔍 Matching-Methode wählen:",
-    ["Standard (Exakter Match)", "Fuzzy-Matching (90% Ähnlichkeit)", "Robust (Text-Normalisierung)"]
-)
+col1, col2 = st.columns(2)
+with col1:
+    use_ocr = st.checkbox("🔍 OCR für gescannte PDFs verwenden", value=True, 
+                         help="Aktiviert OCR für bessere Texterkennung bei gescannten PDFs")
+with col2:
+    show_debug = st.checkbox("🐛 Debug-Informationen anzeigen", value=False,
+                           help="Zeigt detaillierte Matching-Informationen")
 
 if not pdf_files:
     st.info("👉 Bitte zuerst eine oder mehrere PDF-Dateien hochladen.")
@@ -309,15 +410,11 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
     display_rows: list[dict] = []
 
     for pdf_file in pdf_files:
-        st.subheader(f"📄 **{pdf_file.name}**")
+        st.header(f"📄 **{pdf_file.name}**")
         pdf_bytes = pdf_file.read()
 
-        if matching_method == "Fuzzy-Matching (90% Ähnlichkeit)":
-            ocr_names = extract_names_from_pdf_fuzzy_match(pdf_bytes, excel_names, pdf_file.name)
-        elif matching_method == "Robust (Text-Normalisierung)":
-            ocr_names = extract_names_from_pdf_robust_text(pdf_bytes, excel_names, pdf_file.name)
-        else:
-            ocr_names = extract_names_from_pdf_by_word_match(pdf_bytes, excel_names, pdf_file.name)
+        # Verwende die verbesserte Namenerkennung
+        ocr_names = extract_names_enhanced(pdf_bytes, excel_names, pdf_file.name, use_ocr)
 
         page_ann: list[Optional[dict]] = []
         for ocr in ocr_names:
@@ -349,7 +446,22 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
 
         annotated_buffers.append(annotate_pdf_with_tours(pdf_bytes, page_ann))
 
-    st.dataframe(pd.DataFrame(display_rows), use_container_width=True)
+    st.subheader("📊 Zusammenfassung")
+    df_results = pd.DataFrame(display_rows)
+    st.dataframe(df_results, use_container_width=True)
+    
+    # Erfolgsstatistik
+    total_pages = len(df_results)
+    successful_matches = len(df_results[df_results["Gefundener Name"] != "❌"])
+    success_rate = (successful_matches / total_pages * 100) if total_pages > 0 else 0
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Gesamt Seiten", total_pages)
+    with col2:
+        st.metric("Erkannte Namen", successful_matches)
+    with col3:
+        st.metric("Erfolgsrate", f"{success_rate:.1f}%")
 
     if any(annotated_buffers):
         merged_pdf = merge_annotated_pdfs(annotated_buffers)
@@ -361,3 +473,11 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         )
     else:
         st.error("❌ Keine passenden Namen erkannt.")
+        
+    # Verbesserungsvorschläge
+    if success_rate < 80:
+        st.warning("⚠️ **Niedrige Erkennungsrate - Verbesserungsvorschläge:**")
+        st.write("• OCR aktivieren falls noch nicht geschehen")
+        st.write("• PDF-Qualität prüfen (Auflösung, Kontrast)")
+        st.write("• Namen in Excel-Datei auf Tippfehler prüfen")
+        st.write("• Debug-Modus aktivieren für detaillierte Analyse")
