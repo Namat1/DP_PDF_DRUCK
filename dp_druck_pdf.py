@@ -40,13 +40,6 @@ WEEKDAYS_DE: Dict[str, str] = {
 # Hilfsfunktionen
 # ──────────────────────────────────────────────────────────────────────────────
 
-def kw_year_sunday(d: date | datetime) -> Tuple[int, int]:
-    """Kalenderwoche & Jahr berechnen – Woche startet Sonntag."""
-    if isinstance(d, date) and not isinstance(d, datetime):
-        d = datetime.combine(d, time.min)
-    s = d + timedelta(days=1)  # ISO -> Sonntag-Offset
-    return int(s.strftime("%V")), int(s.strftime("%G"))
-
 def format_time(value) -> str:
     """Zahl, Excel-Serial, Timestamp oder Time → HH:MM String."""
     if pd.isna(value):
@@ -66,18 +59,15 @@ def format_time(value) -> str:
     return str(value)
 
 def extract_entries(row: pd.Series) -> List[dict]:
-    """Extrahiert 0-2 Fahrer-Einträge aus einer Excel-Zeile."""
+    """Extrahiert 0-2 Fahrer-Einträge aus einer Excel-Zeile (Datum = Spalte O / Index 14)."""
     entries: List[dict] = []
     datum = pd.to_datetime(row[14], errors="coerce")  # Spalte O
     if pd.isna(datum):
         return entries
 
-    kw, year = kw_year_sunday(datum)
     weekday = WEEKDAYS_DE.get(datum.day_name(), datum.day_name())
 
     base = {
-        "KW": kw,
-        "Jahr": year,
         "Datum": f"{weekday}, {datum.strftime('%d.%m.%Y')}",
         "Datum_raw": datum,  # pd.Timestamp
         "Wochentag": weekday,
@@ -86,10 +76,10 @@ def extract_entries(row: pd.Series) -> List[dict]:
         "LKW": row[11] if len(row) > 11 else "",
     }
 
-    # Fahrer 1
+    # Fahrer 1 (D + E)
     if pd.notna(row[3]) and pd.notna(row[4]):
         entries.append({**base, "Name": f"{str(row[3]).strip()} {str(row[4]).strip()}"})
-    # Fahrer 2
+    # Fahrer 2 (G + H)
     if pd.notna(row[6]) and pd.notna(row[7]):
         entries.append({**base, "Name": f"{str(row[6]).strip()} {str(row[7]).strip()}"})
 
@@ -101,8 +91,7 @@ def normalize_name(name: str) -> str:
 
 def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str]) -> List[str]:
     """
-    Liefert für jede PDF-Seite den erkannten Namen (falls Treffer).
-    Vergleicht Vor- UND Nachnamen separat – nur bei exaktem Match beider Namen.
+    Ermittelt je Seite einen Namen durch EXAKTES Wort-Matching (Vor- und Nachname müssen getrennt auftauchen).
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: List[str] = []
@@ -126,7 +115,7 @@ def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str
             nachname_found = any(word == name_info['nachname'] for word in text_words)
             if vorname_found and nachname_found:
                 found_name = name_info['original']
-                st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name} (exakt)")
+                st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name}")
                 break
 
         if not found_name:
@@ -139,8 +128,7 @@ def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str
 
 def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str]) -> List[str]:
     """
-    Erweiterte Version mit Fuzzy-String-Matching für robusteren Namensabgleich.
-    Benötigt: pip install fuzzywuzzy python-levenshtein
+    Fuzzy-Matching für robusteren Namensabgleich (benötigt fuzzywuzzy + python-levenshtein).
     """
     try:
         from fuzzywuzzy import fuzz
@@ -223,19 +211,6 @@ def merge_annotated_pdfs(buffers: List[bytes]) -> bytes:
     base.close()
     return out.getvalue()
 
-def pick_closest_row_by_date(rows: pd.DataFrame, target_date: date) -> Optional[pd.Series]:
-    """
-    Wählt aus rows (gleicher Name, gleiche KW) die Zeile, deren Datum_raw dem target_date am nächsten ist.
-    Verhindert den Bias, immer den Montag (erste Zeile) zu nehmen.
-    """
-    if rows.empty:
-        return None
-    tmp = rows.copy()
-    # Differenz als absolute Tage
-    tmp["_diff"] = (tmp["Datum_raw"].dt.normalize() - pd.Timestamp(target_date)).abs()
-    tmp = tmp.sort_values(["_diff", "Datum_raw"])
-    return tmp.iloc[0]
-
 # ──────────────────────────────────────────────────────────────────────────────
 # 🔽 UI
 # ──────────────────────────────────────────────────────────────────────────────
@@ -243,18 +218,19 @@ def pick_closest_row_by_date(rows: pd.DataFrame, target_date: date) -> Optional[
 pdf_files = st.file_uploader("📑 PDFs hochladen", type=["pdf"], accept_multiple_files=True)
 excel_file = st.file_uploader("📊 Tourplan-Excel hochladen", type=["xlsx", "xls", "xlsm"])
 
-# Option für Matching-Methode
+# Matching-Methode
 matching_method = st.selectbox(
     "🔍 Matching-Methode wählen:",
     ["Standard (Exakter Match)", "Fuzzy-Matching (90% Ähnlichkeit)"],
-    help="Standard: Nur bei exakter Übereinstimmung von Vor- und Nachname. Fuzzy: Erkennt auch kleine Abweichungen (90% Ähnlichkeit erforderlich)"
+    help="Standard: Nur bei exakter Übereinstimmung von Vor- und Nachname. Fuzzy: erkennt kleine Abweichungen (90%)."
 )
 
 if not pdf_files:
     st.info("👉 Bitte zuerst eine oder mehrere PDF-Dateien hochladen.")
     st.stop()
 
-merged_date: date = st.date_input("📅 Dienstpläne verteilen am:", value=date.today(), format="DD.MM.YYYY")
+# *** WICHTIG: Genau dieses Datum wird gesucht (nicht KW-weit) ***
+search_date: date = st.date_input("📅 Gesuchtes Datum (aus Excel Spalte O)", value=date.today(), format="DD.MM.YYYY")
 
 if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
     if not excel_file:
@@ -263,23 +239,16 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
 
     with st.spinner("🔍 Excel-Daten einlesen …"):
         df_excel = parse_excel_data(excel_file)
-        kw, jahr = kw_year_sunday(merged_date)
-        filtered = df_excel[(df_excel["KW"] == kw) & (df_excel["Jahr"] == jahr)].copy()
 
-    if filtered.empty:
-        st.warning(f"Keine Einträge für KW {kw} ({merged_date.strftime('%d.%m.%Y')}) im Excel gefunden!")
+    # Nur dieses Datum verwenden (kein KW-Fallback!)
+    day_df = df_excel[df_excel["Datum_raw"].dt.date == search_date].copy()
+
+    if day_df.empty:
+        st.warning(f"Keine Einträge für das Datum {search_date.strftime('%d.%m.%Y')} in der Excel gefunden!")
         st.stop()
 
-    # Die tatsächlich vorhandenen Tage der KW aus Excel (sortiert) → robuste Seiten→Datum-Map
-    dates_in_week = sorted({ts.date() for ts in filtered["Datum_raw"]})
-    if not dates_in_week:
-        st.error("In der Excel sind keine Datumswerte für diese KW vorhanden.")
-        st.stop()
-
-    st.info("🗓️ Tage in Excel/KW: " + ", ".join(d.strftime("%a %d.%m.%Y") for d in dates_in_week))
-
-    excel_names = filtered["Name"].unique().tolist()
-    st.info(f"📋 Gefundene Namen in Excel für KW {kw}: {', '.join(excel_names)}")
+    excel_names = day_df["Name"].unique().tolist()
+    st.info(f"📋 Gefundene Namen für {search_date.strftime('%d.%m.%Y')}: {', '.join(excel_names)}")
 
     annotated_buffers: List[bytes] = []
     display_rows: List[dict] = []
@@ -294,46 +263,32 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         else:
             ocr_names = extract_names_from_pdf_by_word_match(pdf_bytes, excel_names)
 
-        # Seiten→Datum: verwende die in Excel vorhandenen Tage der KW (Mo-Sa, So-Sa, etc.)
-        # Bei mehr Seiten als Tage werden die letzten Tage wiederverwendet (selten)
-        page_dates: List[date] = [
-            dates_in_week[i] if i < len(dates_in_week) else dates_in_week[-1]
-            for i in range(len(ocr_names))
-        ]
-
+        # Für jede Seite strikt: Name + exakt dieses Datum
         page_ann: List[Optional[dict]] = []
-        for page_idx, (ocr, page_date) in enumerate(zip(ocr_names, page_dates), start=1):
+        for page_idx, ocr in enumerate(ocr_names, start=1):
             if not ocr:
                 page_ann.append(None)
                 continue
 
-            # 1) Exakt: Name + Datum (Seitendatum)
-            exact = filtered[(filtered["Name"] == ocr) & (filtered["Datum_raw"].dt.date == page_date)]
-
-            if not exact.empty:
-                e = exact.iloc[0]
+            match_row = day_df[day_df["Name"] == ocr]
+            if not match_row.empty:
+                e = match_row.iloc[0]
+                page_ann.append({
+                    "matched_name": ocr,
+                    "tour": str(e["Tour"]),
+                    "weekday": str(e["Wochentag"]),
+                    "time": str(e["Uhrzeit"]),
+                })
             else:
-                # 2) Nächstliegendes Datum für diesen Namen in der KW
-                rows_same_name = filtered[filtered["Name"] == ocr]
-                chosen = pick_closest_row_by_date(rows_same_name, page_date)
-                if chosen is None:
-                    page_ann.append(None)
-                    continue
-                e = chosen
-
-            page_ann.append({
-                "matched_name": ocr,
-                "tour": str(e["Tour"]),
-                "weekday": str(e["Wochentag"]),
-                "time": str(e["Uhrzeit"]),
-            })
+                # Kein Eintrag für diesen Namen **am gewählten Datum** → unzugeordnet lassen
+                page_ann.append(None)
 
         # Übersichtstabelle
-        for i, (ocr, a, pdate) in enumerate(zip(ocr_names, page_ann, page_dates), start=1):
+        for i, (ocr, a) in enumerate(zip(ocr_names, page_ann), start=1):
             display_rows.append({
                 "PDF": pdf_file.name,
                 "Seite": i,
-                "Datum (Seite)": pdate.strftime("%d.%m.%Y"),
+                "Datum (fix)": search_date.strftime("%d.%m.%Y"),
                 "Gefundener Name": ocr or "❌",
                 "Zugeordnet": a["matched_name"] if a else "❌ Nein",
                 "Tour": a["tour"] if a else "",
@@ -350,13 +305,13 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         st.success("✅ Alle PDFs beschriftet. Finale Datei wird erzeugt …")
         merged_pdf = merge_annotated_pdfs(annotated_buffers)
         st.download_button(
-            "📥 Zusammengeführte beschriftete PDF herunterladen", 
-            data=merged_pdf, 
-            file_name=f"dienstplaene_annotiert_KW{kw}_{jahr}.pdf", 
+            "📥 Zusammengeführte beschriftete PDF herunterladen",
+            data=merged_pdf,
+            file_name=f"dienstplaene_annotiert_{search_date.strftime('%Y-%m-%d')}.pdf",
             mime="application/pdf"
         )
     else:
-        st.error("❌ Es konnten keine passenden Namen in den PDFs erkannt werden.")
+        st.error("❌ Es konnten keine passenden Namen am gewählten Datum erkannt werden.")
 
 st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher v2.3 – robuste Seiten→Datum-Zuordnung & nächstliegendes Datum als Fallback*")
+st.markdown("*PDF Dienstplan Matcher – Striktes Datumsmatching (Spalte O)*")
