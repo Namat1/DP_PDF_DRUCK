@@ -86,6 +86,14 @@ def extract_entries(row: pd.Series) -> List[dict]:
 
     return entries
 
+def parse_excel_data(excel_file) -> pd.DataFrame:
+    """Excel einlesen und alle Fahrer-Einträge extrahieren."""
+    df = pd.read_excel(excel_file, header=None)
+    entries: List[dict] = []
+    for _, row in df.iterrows():
+        entries.extend(extract_entries(row))
+    return pd.DataFrame(entries)
+
 def normalize_name(name: str) -> str:
     """Einfache Normalisierung für Wort-genaues Matching."""
     return re.sub(r"\s+", " ", name.upper().strip())
@@ -111,9 +119,13 @@ def de_ascii_normalize(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s.upper()
 
+def prepend_filename_to_text(page_text: str, pdf_name: str) -> str:
+    """Fügt den originalen Dateinamen als erste Textzeile ein (im Rohtext sichtbar)."""
+    return f"__FILENAME__: {pdf_name}\n{page_text}"
+
 # ── Matching-Methoden ─────────────────────────────────────────────────────────
 
-def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str]) -> List[str]:
+def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str], pdf_name: str) -> List[str]:
     """
     Ermittelt je Seite einen Namen durch EXAKTES Wort-Matching (Vor- und Nachname müssen als einzelne Wörter auftauchen).
     """
@@ -130,7 +142,8 @@ def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str
             excel_name_parts.append({'original': name, 'vorname': vorname, 'nachname': nachname})
 
     for page_idx, page in enumerate(doc, start=1):
-        text = page.get_text()
+        raw = page.get_text("text")
+        text = prepend_filename_to_text(raw, pdf_name)  # Dateiname in den Text einfügen
         text_words = [normalize_name(word) for word in text.split()]
         found_name = ""
 
@@ -150,7 +163,7 @@ def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str
     doc.close()
     return results
 
-def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str]) -> List[str]:
+def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str], pdf_name: str) -> List[str]:
     """
     Fuzzy-Matching für robusteren Namensabgleich (benötigt fuzzywuzzy + python-levenshtein).
     """
@@ -158,7 +171,7 @@ def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str])
         from fuzzywuzzy import fuzz
     except ImportError:
         st.warning("FuzzyWuzzy nicht installiert. Verwende Standard-Matching.")
-        return extract_names_from_pdf_by_word_match(pdf_bytes, excel_names)
+        return extract_names_from_pdf_by_word_match(pdf_bytes, excel_names, pdf_name)
 
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: List[str] = []
@@ -172,7 +185,8 @@ def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str])
             excel_name_parts.append({'original': name, 'vorname': vorname, 'nachname': nachname})
 
     for page_idx, page in enumerate(doc, start=1):
-        text = page.get_text()
+        raw = page.get_text("text")
+        text = prepend_filename_to_text(raw, pdf_name)
         text_words = [normalize_name(word) for word in text.split()]
         found_name = ""
         best_score = 0
@@ -198,13 +212,14 @@ def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str])
     doc.close()
     return results
 
-def extract_names_from_pdf_robust_text(pdf_bytes: bytes, excel_names: List[str]) -> List[str]:
+def extract_names_from_pdf_robust_text(pdf_bytes: bytes, excel_names: List[str], pdf_name: str) -> List[str]:
     """
-    Robustes Matching:
+    Robustes Matching (nur Text beachten):
     - Ganze Seite als Fließtext
-    - Starke DE-Normalisierung (de_ascii_normalize)
-    - Substring-Suche in Varianten 'NACHNAME VORNAME' und 'VORNAME NACHNAME'
-    - Fängt Zeilenumbrüche, Ligaturen, Umlaute/ß, Sonderzeichen zuverlässig ab.
+    - Dateiname wird als erste Zeile eingefügt: "__FILENAME__: <pdf_name>"
+    - Starke DE-Normalisierung (de_ascii_normalize) für Vergleich
+    - Substring-Suche für 'NACHNAME VORNAME' und 'VORNAME NACHNAME'
+    - tolerant bei Zeilenumbrüchen, Ligaturen, Umlauten/ß, Sonderzeichen, zusammengeklebten Namen
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: List[str] = []
@@ -219,8 +234,9 @@ def extract_names_from_pdf_robust_text(pdf_bytes: bytes, excel_names: List[str])
             name_variants.append((full, de_ascii_normalize(v1), de_ascii_normalize(v2)))
 
     for page_idx, page in enumerate(doc, start=1):
-        text = page.get_text("text")
-        norm = de_ascii_normalize(text)
+        raw = page.get_text("text")
+        text_with_filename = prepend_filename_to_text(raw, pdf_name)
+        norm = de_ascii_normalize(text_with_filename)
 
         found = ""
         for original, v1, v2 in name_variants:
@@ -235,14 +251,6 @@ def extract_names_from_pdf_robust_text(pdf_bytes: bytes, excel_names: List[str])
 
     doc.close()
     return results
-
-def parse_excel_data(excel_file) -> pd.DataFrame:
-    """Excel einlesen und alle Fahrer-Einträge extrahieren."""
-    df = pd.read_excel(excel_file, header=None)
-    entries: List[dict] = []
-    for _, row in df.iterrows():
-        entries.extend(extract_entries(row))
-    return pd.DataFrame(entries)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PDF Beschriften / Mergen
@@ -333,11 +341,11 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
 
         # OCR-Namen je Seite (gewählte Methode)
         if matching_method == "Fuzzy-Matching (90% Ähnlichkeit)":
-            ocr_names = extract_names_from_pdf_fuzzy_match(pdf_bytes, excel_names)
+            ocr_names = extract_names_from_pdf_fuzzy_match(pdf_bytes, excel_names, pdf_file.name)
         elif matching_method == "Robust (Text-Normalisierung)":
-            ocr_names = extract_names_from_pdf_robust_text(pdf_bytes, excel_names)
+            ocr_names = extract_names_from_pdf_robust_text(pdf_bytes, excel_names, pdf_file.name)
         else:
-            ocr_names = extract_names_from_pdf_by_word_match(pdf_bytes, excel_names)
+            ocr_names = extract_names_from_pdf_by_word_match(pdf_bytes, excel_names, pdf_file.name)
 
         # Für jede Seite strikt: Name + exakt dieses Datum
         page_ann: List[Optional[dict]] = []
@@ -363,6 +371,7 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         for i, (ocr, a) in enumerate(zip(ocr_names, page_ann), start=1):
             display_rows.append({
                 "PDF": pdf_file.name,
+                "Dateiname (Text)": f"__FILENAME__: {pdf_file.name}",
                 "Seite": i,
                 "Datum (fix)": search_date.strftime("%d.%m.%Y"),
                 "Gefundener Name": ocr or "❌",
@@ -390,4 +399,4 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         st.error("❌ Es konnten keine passenden Namen am gewählten Datum erkannt werden.")
 
 st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher – Striktes Datumsmatching (Spalte O) + Robustes Namens-Matching*")
+st.markdown("*PDF Dienstplan Matcher – Striktes Datumsmatching (Spalte O) + Robustes Namens-Matching + Dateiname im Text*")
