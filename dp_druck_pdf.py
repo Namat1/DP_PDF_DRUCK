@@ -42,17 +42,10 @@ WEEKDAYS_DE: Dict[str, str] = {
 
 def kw_year_sunday(d: date | datetime) -> Tuple[int, int]:
     """Kalenderwoche & Jahr berechnen – Woche startet Sonntag."""
-    # ISO-KW beginnt Montag; wir verschieben +1 Tag, um Sonntag-Start zu erreichen
     if isinstance(d, date) and not isinstance(d, datetime):
         d = datetime.combine(d, time.min)
     s = d + timedelta(days=1)  # ISO -> Sonntag-Offset
     return int(s.strftime("%V")), int(s.strftime("%G"))
-
-def week_start_sunday(d: date) -> date:
-    """Gibt den Sonntag der Woche zurück, in der das Datum d liegt (Woche beginnt Sonntag)."""
-    # Python: Monday=0 ... Sunday=6 → Abstand bis Sonntag:
-    days_to_sunday = (d.weekday() + 1) % 7
-    return d - timedelta(days=days_to_sunday)
 
 def format_time(value) -> str:
     """Zahl, Excel-Serial, Timestamp oder Time → HH:MM String."""
@@ -93,10 +86,10 @@ def extract_entries(row: pd.Series) -> List[dict]:
         "LKW": row[11] if len(row) > 11 else "",
     }
 
-    # Fahrer 1 (D + E)
+    # Fahrer 1
     if pd.notna(row[3]) and pd.notna(row[4]):
         entries.append({**base, "Name": f"{str(row[3]).strip()} {str(row[4]).strip()}"})
-    # Fahrer 2 (G + H)
+    # Fahrer 2
     if pd.notna(row[6]) and pd.notna(row[7]):
         entries.append({**base, "Name": f"{str(row[6]).strip()} {str(row[7]).strip()}"})
 
@@ -114,41 +107,26 @@ def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: List[str] = []
 
-    # Excel-Namen in Vor- und Nachnamen aufteilen (Nachname Vorname Format)
+    # Excel-Namen in Vor- und Nachnamen aufteilen
     excel_name_parts = []
     for name in excel_names:
         parts = name.strip().split()
         if len(parts) >= 2:
-            nachname = normalize_name(parts[0])  # Erster Teil ist Nachname
-            vorname = normalize_name(parts[1])   # Zweiter Teil ist Vorname
-            excel_name_parts.append({
-                'original': name,
-                'vorname': vorname,
-                'nachname': nachname
-            })
+            nachname = normalize_name(parts[0])
+            vorname = normalize_name(parts[1])
+            excel_name_parts.append({'original': name, 'vorname': vorname, 'nachname': nachname})
 
     for page_idx, page in enumerate(doc, start=1):
         text = page.get_text()
         text_words = [normalize_name(word) for word in text.split()]
-
         found_name = ""
 
-        # Durchsuche alle Excel-Namen
         for name_info in excel_name_parts:
-            vorname_found = False
-            nachname_found = False
-
-            # Prüfe ob sowohl Vor- als auch Nachname EXAKT im PDF-Text vorkommen
-            for word in text_words:
-                if word == name_info['vorname']:
-                    vorname_found = True
-                if word == name_info['nachname']:
-                    nachname_found = True
-
-            # Nur bei EXAKTEM Match beider Namen zuordnen
+            vorname_found = any(word == name_info['vorname'] for word in text_words)
+            nachname_found = any(word == name_info['nachname'] for word in text_words)
             if vorname_found and nachname_found:
                 found_name = name_info['original']
-                st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name} (Nachname: {name_info['nachname']}, Vorname: {name_info['vorname']})")
+                st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name} (exakt)")
                 break
 
         if not found_name:
@@ -173,49 +151,33 @@ def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str])
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: List[str] = []
 
-    # Excel-Namen in Vor- und Nachnamen aufteilen (Nachname Vorname Format)
     excel_name_parts = []
     for name in excel_names:
         parts = name.strip().split()
         if len(parts) >= 2:
-            nachname = normalize_name(parts[0])  # Erster Teil ist Nachname
-            vorname = normalize_name(parts[1])   # Zweiter Teil ist Vorname
-            excel_name_parts.append({
-                'original': name,
-                'vorname': vorname,
-                'nachname': nachname
-            })
+            nachname = normalize_name(parts[0])
+            vorname = normalize_name(parts[1])
+            excel_name_parts.append({'original': name, 'vorname': vorname, 'nachname': nachname})
 
     for page_idx, page in enumerate(doc, start=1):
         text = page.get_text()
         text_words = [normalize_name(word) for word in text.split()]
-
         found_name = ""
         best_score = 0
 
-        # Durchsuche alle Excel-Namen mit Fuzzy-Matching
         for name_info in excel_name_parts:
-            vorname_score = 0
-            nachname_score = 0
-
-            # Finde beste Matches für Vor- und Nachname
-            for word in text_words:
-                vorname_ratio = fuzz.ratio(name_info['vorname'], word)
-                nachname_ratio = fuzz.ratio(name_info['nachname'], word)
-                if vorname_ratio > vorname_score:
-                    vorname_score = vorname_ratio
-                if nachname_ratio > nachname_score:
-                    nachname_score = nachname_ratio
-
-            # Beide Namen müssen mindestens 90% Ähnlichkeit haben
-            if vorname_score >= 90 and nachname_score >= 90:
-                combined_score = (vorname_score + nachname_score) / 2
-                if combined_score > best_score:
-                    best_score = combined_score
+            vs, ns = 0, 0
+            for w in text_words:
+                vs = max(vs, fuzz.ratio(name_info['vorname'], w))
+                ns = max(ns, fuzz.ratio(name_info['nachname'], w))
+            if vs >= 90 and ns >= 90:
+                score = (vs + ns) / 2
+                if score > best_score:
+                    best_score = score
                     found_name = name_info['original']
 
         if found_name:
-            st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name} (Konfidenz: {best_score:.1f}%)")
+            st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name} (≈{best_score:.0f}%)")
         else:
             st.markdown(f"**Seite {page_idx} – Gefundener Name:** ❌ nicht erkannt")
 
@@ -261,6 +223,19 @@ def merge_annotated_pdfs(buffers: List[bytes]) -> bytes:
     base.close()
     return out.getvalue()
 
+def pick_closest_row_by_date(rows: pd.DataFrame, target_date: date) -> Optional[pd.Series]:
+    """
+    Wählt aus rows (gleicher Name, gleiche KW) die Zeile, deren Datum_raw dem target_date am nächsten ist.
+    Verhindert den Bias, immer den Montag (erste Zeile) zu nehmen.
+    """
+    if rows.empty:
+        return None
+    tmp = rows.copy()
+    # Differenz als absolute Tage
+    tmp["_diff"] = (tmp["Datum_raw"].dt.normalize() - pd.Timestamp(target_date)).abs()
+    tmp = tmp.sort_values(["_diff", "Datum_raw"])
+    return tmp.iloc[0]
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 🔽 UI
 # ──────────────────────────────────────────────────────────────────────────────
@@ -289,11 +264,19 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
     with st.spinner("🔍 Excel-Daten einlesen …"):
         df_excel = parse_excel_data(excel_file)
         kw, jahr = kw_year_sunday(merged_date)
-        filtered = df_excel[(df_excel["KW"] == kw) & (df_excel["Jahr"] == jahr)]
+        filtered = df_excel[(df_excel["KW"] == kw) & (df_excel["Jahr"] == jahr)].copy()
 
     if filtered.empty:
         st.warning(f"Keine Einträge für KW {kw} ({merged_date.strftime('%d.%m.%Y')}) im Excel gefunden!")
         st.stop()
+
+    # Die tatsächlich vorhandenen Tage der KW aus Excel (sortiert) → robuste Seiten→Datum-Map
+    dates_in_week = sorted({ts.date() for ts in filtered["Datum_raw"]})
+    if not dates_in_week:
+        st.error("In der Excel sind keine Datumswerte für diese KW vorhanden.")
+        st.stop()
+
+    st.info("🗓️ Tage in Excel/KW: " + ", ".join(d.strftime("%a %d.%m.%Y") for d in dates_in_week))
 
     excel_names = filtered["Name"].unique().tolist()
     st.info(f"📋 Gefundene Namen in Excel für KW {kw}: {', '.join(excel_names)}")
@@ -305,15 +288,18 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         st.subheader(f"📄 **{pdf_file.name}**")
         pdf_bytes = pdf_file.read()
 
-        # OCR-Namen je Seite (je nach Methode)
+        # OCR-Namen je Seite (gewählte Methode)
         if matching_method == "Fuzzy-Matching (90% Ähnlichkeit)":
             ocr_names = extract_names_from_pdf_fuzzy_match(pdf_bytes, excel_names)
         else:
             ocr_names = extract_names_from_pdf_by_word_match(pdf_bytes, excel_names)
 
-        # Datumszuordnung je Seite (Seite 1 = Sonntag der KW)
-        week_sunday = week_start_sunday(merged_date)
-        page_dates = [week_sunday + timedelta(days=i) for i in range(len(ocr_names))]
+        # Seiten→Datum: verwende die in Excel vorhandenen Tage der KW (Mo-Sa, So-Sa, etc.)
+        # Bei mehr Seiten als Tage werden die letzten Tage wiederverwendet (selten)
+        page_dates: List[date] = [
+            dates_in_week[i] if i < len(dates_in_week) else dates_in_week[-1]
+            for i in range(len(ocr_names))
+        ]
 
         page_ann: List[Optional[dict]] = []
         for page_idx, (ocr, page_date) in enumerate(zip(ocr_names, page_dates), start=1):
@@ -321,27 +307,26 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
                 page_ann.append(None)
                 continue
 
-            # Zeile exakt zum Namen **und** Datum der Seite suchen
-            # Achtung: Datum_raw ist ein Timestamp → .dt.date für Vergleich
-            match_row = filtered[
-                (filtered["Name"] == ocr) &
-                (filtered["Datum_raw"].dt.date == page_date)
-            ]
+            # 1) Exakt: Name + Datum (Seitendatum)
+            exact = filtered[(filtered["Name"] == ocr) & (filtered["Datum_raw"].dt.date == page_date)]
 
-            if match_row.empty:
-                # Fallback innerhalb der Woche: nimm den chronologisch ersten Eintrag des Namens
-                match_row = filtered[filtered["Name"] == ocr].sort_values("Datum_raw")
-
-            if not match_row.empty:
-                e = match_row.iloc[0]
-                page_ann.append({
-                    "matched_name": ocr,
-                    "tour": str(e["Tour"]),
-                    "weekday": str(e["Wochentag"]),
-                    "time": str(e["Uhrzeit"]),
-                })
+            if not exact.empty:
+                e = exact.iloc[0]
             else:
-                page_ann.append(None)
+                # 2) Nächstliegendes Datum für diesen Namen in der KW
+                rows_same_name = filtered[filtered["Name"] == ocr]
+                chosen = pick_closest_row_by_date(rows_same_name, page_date)
+                if chosen is None:
+                    page_ann.append(None)
+                    continue
+                e = chosen
+
+            page_ann.append({
+                "matched_name": ocr,
+                "tour": str(e["Tour"]),
+                "weekday": str(e["Wochentag"]),
+                "time": str(e["Uhrzeit"]),
+            })
 
         # Übersichtstabelle
         for i, (ocr, a, pdate) in enumerate(zip(ocr_names, page_ann, page_dates), start=1):
@@ -365,13 +350,13 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         st.success("✅ Alle PDFs beschriftet. Finale Datei wird erzeugt …")
         merged_pdf = merge_annotated_pdfs(annotated_buffers)
         st.download_button(
-            "📥 Zusammengeführte beschriftete PDF herunterladen",
-            data=merged_pdf,
-            file_name=f"dienstplaene_annotiert_KW{kw}_{jahr}.pdf",
+            "📥 Zusammengeführte beschriftete PDF herunterladen", 
+            data=merged_pdf, 
+            file_name=f"dienstplaene_annotiert_KW{kw}_{jahr}.pdf", 
             mime="application/pdf"
         )
     else:
         st.error("❌ Es konnten keine passenden Namen in den PDFs erkannt werden.")
 
 st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher v2.2 – Name+Datum-Match, Woche startet Sonntag*")
+st.markdown("*PDF Dienstplan Matcher v2.3 – robuste Seiten→Datum-Zuordnung & nächstliegendes Datum als Fallback*")
