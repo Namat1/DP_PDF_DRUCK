@@ -38,7 +38,7 @@ WEEKDAYS_DE: Dict[str, str] = {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Hilfsfunktionen
+# Hilfsfunktionen – Excel & Normalisierung
 # ──────────────────────────────────────────────────────────────────────────────
 
 def format_time(value) -> str:
@@ -123,16 +123,47 @@ def prepend_filename_to_text(page_text: str, pdf_name: str) -> str:
     """Fügt den originalen Dateinamen als erste Textzeile ein (im Rohtext sichtbar)."""
     return f"__FILENAME__: {pdf_name}\n{page_text}"
 
-# ── Matching-Methoden ─────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# Hilfsfunktionen – Dateiname → Priorisierung
+# ──────────────────────────────────────────────────────────────────────────────
+
+def filename_tokens(pdf_name: str) -> List[str]:
+    """Zerlegt den Dateinamen in Tokens (ähnlich normalisiert wie der Textvergleich)."""
+    base = re.sub(r"\.[Pp][Dd][Ff]$", "", pdf_name)
+    base = base.replace("ä","ae").replace("ö","oe").replace("ü","ue") \
+               .replace("Ä","AE").replace("Ö","OE").replace("Ü","UE") \
+               .replace("ß","ss").replace("ẞ","SS")
+    base = re.sub(r"[^A-Za-z0-9]+", " ", base)
+    return [t for t in base.upper().split() if t]
+
+def choose_best_candidate(candidates: List[str], pdf_name: str) -> Optional[str]:
+    """
+    Bevorzugt den Kandidaten, dessen NACHNAME im Dateinamen vorkommt.
+    (Für 'Nachname Vorname' wird das erste Wort als Nachname angenommen.)
+    """
+    if not candidates:
+        return None
+    toks = set(filename_tokens(pdf_name))
+    for c in candidates:
+        parts = [p for p in c.strip().split() if p]
+        if len(parts) >= 2 and parts[0].upper() in toks:
+            return c
+    return candidates[0]  # deterministischer Fallback
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Matching-Methoden
+# ──────────────────────────────────────────────────────────────────────────────
 
 def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str], pdf_name: str) -> List[str]:
     """
-    Ermittelt je Seite einen Namen durch EXAKTES Wort-Matching (Vor- und Nachname müssen als einzelne Wörter auftauchen).
+    EXAKTES Wort-Matching:
+    - Vor- und Nachname müssen als einzelne Wörter im Text stehen.
+    - Mehrtreffer: sammelt alle, priorisiert via Dateiname.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: List[str] = []
 
-    # Excel-Namen in Vor- und Nachnamen aufteilen
+    # Vorbereiten
     excel_name_parts = []
     for name in excel_names:
         parts = name.strip().split()
@@ -143,29 +174,32 @@ def extract_names_from_pdf_by_word_match(pdf_bytes: bytes, excel_names: List[str
 
     for page_idx, page in enumerate(doc, start=1):
         raw = page.get_text("text")
-        text = prepend_filename_to_text(raw, pdf_name)  # Dateiname in den Text einfügen
+        text = prepend_filename_to_text(raw, pdf_name)
         text_words = [normalize_name(word) for word in text.split()]
-        found_name = ""
 
+        candidates: List[str] = []
         for name_info in excel_name_parts:
-            vorname_found = any(word == name_info['vorname'] for word in text_words)
-            nachname_found = any(word == name_info['nachname'] for word in text_words)
+            vorname_found = any(w == name_info['vorname'] for w in text_words)
+            nachname_found = any(w == name_info['nachname'] for w in text_words)
             if vorname_found and nachname_found:
-                found_name = name_info['original']
-                st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name} (exakt)")
-                break
+                candidates.append(name_info['original'])
 
-        if not found_name:
+        if candidates:
+            chosen = choose_best_candidate(candidates, pdf_name)
+            st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {chosen} (exakt, {len(candidates)} Treffer)")
+            results.append(chosen or "")
+        else:
             st.markdown(f"**Seite {page_idx} – Gefundener Name:** ❌ nicht erkannt")
-
-        results.append(found_name)
+            results.append("")
 
     doc.close()
     return results
 
 def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str], pdf_name: str) -> List[str]:
     """
-    Fuzzy-Matching für robusteren Namensabgleich (benötigt fuzzywuzzy + python-levenshtein).
+    FUZZY Matching (benötigt fuzzywuzzy + python-levenshtein):
+    - Toleriert kleinere OCR-/Textextraktionsfehler.
+    - Mehrtreffer: sammelt alle, priorisiert via Dateiname.
     """
     try:
         from fuzzywuzzy import fuzz
@@ -188,8 +222,9 @@ def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str],
         raw = page.get_text("text")
         text = prepend_filename_to_text(raw, pdf_name)
         text_words = [normalize_name(word) for word in text.split()]
-        found_name = ""
-        best_score = 0
+
+        candidates: List[str] = []
+        best_scores: Dict[str, float] = {}
 
         for name_info in excel_name_parts:
             vs, ns = 0, 0
@@ -197,57 +232,62 @@ def extract_names_from_pdf_fuzzy_match(pdf_bytes: bytes, excel_names: List[str],
                 vs = max(vs, fuzz.ratio(name_info['vorname'], w))
                 ns = max(ns, fuzz.ratio(name_info['nachname'], w))
             if vs >= 90 and ns >= 90:
-                score = (vs + ns) / 2
-                if score > best_score:
-                    best_score = score
-                    found_name = name_info['original']
+                candidates.append(name_info['original'])
+                best_scores[name_info['original']] = (vs + ns) / 2
 
-        if found_name:
-            st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {found_name} (≈{best_score:.0f}%)")
+        if candidates:
+            chosen = choose_best_candidate(candidates, pdf_name)
+            score_info = f" (≈{best_scores.get(chosen, 0):.0f}%)" if chosen in best_scores else ""
+            st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {chosen}{score_info} (fuzzy, {len(candidates)} Treffer)")
+            results.append(chosen or "")
         else:
             st.markdown(f"**Seite {page_idx} – Gefundener Name:** ❌ nicht erkannt")
-
-        results.append(found_name)
+            results.append("")
 
     doc.close()
     return results
 
 def extract_names_from_pdf_robust_text(pdf_bytes: bytes, excel_names: List[str], pdf_name: str) -> List[str]:
     """
-    Robustes Matching (nur Text beachten):
-    - Ganze Seite als Fließtext
-    - Dateiname wird als erste Zeile eingefügt: "__FILENAME__: <pdf_name>"
-    - Starke DE-Normalisierung (de_ascii_normalize) für Vergleich
-    - Substring-Suche für 'NACHNAME VORNAME' und 'VORNAME NACHNAME'
-    - tolerant bei Zeilenumbrüchen, Ligaturen, Umlauten/ß, Sonderzeichen, zusammengeklebten Namen
+    ROBUST (nur Text):
+    - Ganze Seite als Fließtext + Dateiname als 1. Zeile
+    - Starke DE-Normalisierung
+    - Substring-Suche für 'NACHNAME VORNAME' & 'VORNAME NACHNAME'
+    - akzeptiert Zeilenumbrüche, Ligaturen, Umlaute/ß, Sonderzeichen, zusammengeklebte Namen
+    - Mehrtreffer → via Dateiname priorisiert
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: List[str] = []
 
-    name_variants = []
+    variants = []  # (original, v1_norm, v2_norm, v1_nosp, v2_nosp)
     for full in excel_names:
         parts = [p for p in str(full).strip().split() if p]
         if len(parts) >= 2:
             nachname, vorname = parts[0], parts[1]
             v1 = f"{nachname} {vorname}"
             v2 = f"{vorname} {nachname}"
-            name_variants.append((full, de_ascii_normalize(v1), de_ascii_normalize(v2)))
+            v1n = de_ascii_normalize(v1)
+            v2n = de_ascii_normalize(v2)
+            variants.append((full, v1n, v2n, v1n.replace(" ",""), v2n.replace(" ","")))
 
     for page_idx, page in enumerate(doc, start=1):
         raw = page.get_text("text")
         text_with_filename = prepend_filename_to_text(raw, pdf_name)
         norm = de_ascii_normalize(text_with_filename)
+        norm_nosp = norm.replace(" ", "")
 
-        found = ""
-        for original, v1, v2 in name_variants:
-            if v1 in norm or v2 in norm:
-                found = original
-                st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {original} (robust)")
-                break
+        found_candidates: List[str] = []
+        for original, v1, v2, v1_nosp, v2_nosp in variants:
+            if v1 in norm or v2 in norm or v1_nosp in norm_nosp or v2_nosp in norm_nosp:
+                found_candidates.append(original)
 
-        if not found:
+        if found_candidates:
+            chosen = choose_best_candidate(found_candidates, pdf_name)
+            st.markdown(f"**Seite {page_idx} – Gefundener Name:** ✅ {chosen} (robust, {len(found_candidates)} Treffer, Dateiname priorisiert)")
+            results.append(chosen or "")
+        else:
             st.markdown(f"**Seite {page_idx} – Gefundener Name:** ❌ nicht erkannt")
-        results.append(found)
+            results.append("")
 
     doc.close()
     return results
@@ -298,7 +338,7 @@ matching_method = st.selectbox(
     ["Standard (Exakter Match)", "Fuzzy-Matching (90% Ähnlichkeit)", "Robust (Text-Normalisierung)"],
     help=(
         "Standard: Vor- und Nachname müssen als getrennte Wörter im PDF stehen. "
-        "Fuzzy: toleriert kleinere OCR-Fehler. "
+        "Fuzzy: toleriert kleinere OCR-/Textextraktionsfehler. "
         "Robust: sucht im normalisierten Fließtext (empfohlen bei Zeilenumbrüchen/Ligaturen/Umlauten/ß)."
     )
 )
@@ -399,4 +439,4 @@ if st.button("🚀 PDFs analysieren & beschriften", type="primary"):
         st.error("❌ Es konnten keine passenden Namen am gewählten Datum erkannt werden.")
 
 st.markdown("---")
-st.markdown("*PDF Dienstplan Matcher – Striktes Datumsmatching (Spalte O) + Robustes Namens-Matching + Dateiname im Text*")
+st.markdown("*PDF Dienstplan Matcher – Striktes Datumsmatching (Spalte O) · Robust/ Fuzzy/ Exakt · Dateiname im Text & als Priorisierung*")
